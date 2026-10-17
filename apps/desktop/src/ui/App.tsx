@@ -143,6 +143,18 @@ export function App() {
     } catch (reason) { setError(String(reason)); setChallenge(null); }
   }
 
+  async function disconnectPeer() {
+    if (!pairingResult) return;
+    try {
+      await invoke("disconnect_peer", { peerDeviceId: pairingResult.peer_device_id });
+      setPairingResult(null);
+      setRemoteEntries(null);
+      setRemoteDirectory(null);
+      setUploadProgress(null);
+      setError(null);
+    } catch (reason) { setError(String(reason)); }
+  }
+
   async function refreshRemoteDirectory(path: string | null, peerDeviceId = pairingResult?.peer_device_id) {
     if (!peerDeviceId) return;
     try {
@@ -282,7 +294,7 @@ export function App() {
           </section>
 
           {peers.length > 0 && <section className="setup-panel"><div className="workspace-content"><strong>Discovered devices · not trusted yet</strong><p>Pair only when both people can compare and approve the same six-digit code.</p>{peers.map((peer) => <div className="peer-row" key={peer.device_id}><span>{peer.device_id} · {peer.addresses.join(", ")}</span><button onClick={() => peer.addresses[0] && pairWith(peer, peer.addresses[0])}>Request pairing</button></div>)}</div></section>}
-          {pairingResult && <section className="setup-panel"><div className="workspace-content"><strong>Trusted peer · encrypted transport active</strong><p>{pairingResult.detail}</p><div className="workspace-root">Authenticated peer · {pairingResult.peer_device_id}</div></div></section>}
+          {pairingResult && <section className="setup-panel"><div className="workspace-content"><strong>Trusted peer · encrypted transport active</strong><p>{pairingResult.detail}</p><div className="workspace-root">Authenticated peer · {pairingResult.peer_device_id}</div><div className="workspace-actions"><button onClick={() => void disconnectPeer()}>Disconnect peer</button></div></div></section>}
 
           {pairingResult?.transport_active && <section className="setup-panel workspace-panel"><div className="setup-symbol">⇄</div><div className="workspace-content"><strong>Peer Shared Workspace</strong><p>Contents are requested over the authenticated encrypted connection. The peer must grant a folder before it appears here.</p><div className="workspace-actions"><button onClick={() => void refreshRemoteDirectory(remoteDirectory)}>Refresh peer folder</button><button onClick={() => void createRemoteFolder()}>New peer folder</button><button disabled={Boolean(uploadProgress && !uploadProgress.complete)} onClick={() => void uploadRemoteFile()}>Upload file</button></div>{uploadProgress?.peer_device_id === pairingResult.peer_device_id && <div className="workspace-root" role="status">{uploadProgress.complete ? "Upload verified" : "Uploading"} · {uploadProgress.bytes_sent.toLocaleString()} / {uploadProgress.total_bytes.toLocaleString()} bytes{uploadProgress.total_bytes > 0 ? ` · ${Math.floor(uploadProgress.bytes_sent * 100 / uploadProgress.total_bytes)}%` : ""}</div>}{remoteEntries && <><div className="workspace-root">Remote folder · {remoteDirectory || "/"}</div><div className="file-list">{remoteDirectory && <button className="file-row folder-row" onClick={() => void refreshRemoteDirectory(remoteDirectory.includes("/") ? remoteDirectory.slice(0, remoteDirectory.lastIndexOf("/")) : null)}>↰ <span>Parent folder</span></button>}{remoteEntries.map((entry) => <div className="remote-entry" key={entry.relative_path}><button className="file-row" onClick={() => entry.kind === "directory" ? void refreshRemoteDirectory(entry.relative_path) : void downloadRemoteFile(entry)}><span>{entry.kind === "directory" ? "▰" : "▤"} {entry.name}</span><small>{entry.kind === "directory" ? "Folder" : `${entry.size.toLocaleString()} bytes · download`}</small></button><div className="remote-entry-actions"><button onClick={() => void renameRemoteEntry(entry)}>Rename</button>{entry.kind === "file" && <button onClick={() => void deleteRemoteFile(entry)}>Delete</button>}</div></div>)}{remoteEntries.length === 0 && <span className="empty-files">Peer folder is empty.</span>}</div></>}</div></section>}
 

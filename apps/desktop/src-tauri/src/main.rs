@@ -35,6 +35,7 @@ struct PairingInner {
     trusted: Mutex<Vec<String>>,
     active: Mutex<HashSet<String>>,
     clients: Mutex<HashMap<String, FileRpcClient>>,
+    session_tasks: Mutex<HashMap<String, tokio::task::AbortHandle>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -323,6 +324,33 @@ fn respond_to_pairing(
         .map_err(|_| "pairing request ended".to_owned())
 }
 
+#[tauri::command]
+fn disconnect_peer(
+    app: tauri::AppHandle,
+    peer_device_id: String,
+    pairing: tauri::State<'_, PairingState>,
+) -> Result<(), String> {
+    use tauri::Emitter;
+
+    let abort = pairing
+        .0
+        .session_tasks
+        .lock()
+        .map_err(|_| "session state is unavailable")?
+        .remove(&peer_device_id)
+        .ok_or("peer has no active session")?;
+    // Aborting the RPC owner drops the encrypted stream, closing this session.
+    abort.abort();
+    if let Ok(mut active) = pairing.0.active.lock() {
+        active.remove(&peer_device_id);
+    }
+    if let Ok(mut clients) = pairing.0.clients.lock() {
+        clients.remove(&peer_device_id);
+    }
+    let _ = app.emit("pairing-ended", &peer_device_id);
+    Ok(())
+}
+
 async fn run_pairing(
     stream: tokio::net::TcpStream,
     identity: Arc<DeviceIdentity>,
@@ -413,6 +441,9 @@ async fn run_pairing(
     let session_pairing = pairing.clone();
     let session_app = completion_app.clone();
     let (client, task) = spawn_file_rpc(sender, receiver, workspace);
+    if let Ok(mut tasks) = pairing.session_tasks.lock() {
+        tasks.insert(peer_for_task.clone(), task.abort_handle());
+    }
     if let Ok(mut clients) = pairing.clients.lock() {
         clients.insert(peer_for_task.clone(), client);
     }
@@ -423,6 +454,9 @@ async fn run_pairing(
         }
         if let Ok(mut clients) = session_pairing.clients.lock() {
             clients.remove(&peer_for_task);
+        }
+        if let Ok(mut tasks) = session_pairing.session_tasks.lock() {
+            tasks.remove(&peer_for_task);
         }
         let _ = session_app.emit("pairing-ended", peer_for_task);
     });
@@ -737,6 +771,7 @@ fn main() {
             discover_local_peers,
             pair_with_peer,
             respond_to_pairing,
+            disconnect_peer,
             list_remote_workspace,
             create_remote_directory,
             read_remote_file_range,
