@@ -10,7 +10,7 @@ The receiver validates frame size, dimensions, session, destination, and monoton
 
 ## Verification
 
-`cargo test --workspace`: **52 passed**. Tests verify forward progress across dropped-frame sequence gaps, rejection of wrong targets/replay/invalid dimensions, and binary payload round-trip with a 512 KiB payload without JSON array expansion. Workspace Clippy passed with `-D warnings`; Tauri tests: **2 passed**; Tauri Clippy passed with `-D warnings`.
+`cargo test --workspace`: **53 passed**. Tests verify forward progress across dropped-frame sequence gaps, rejection of wrong targets/replay/invalid dimensions, binary payload round-trip with a 512 KiB payload without JSON array expansion, and typed window/display frames crossing the authenticated encrypted multiplexer while a file-lane record also makes progress. Workspace Clippy passed with `-D warnings`; Tauri tests: **2 passed**; Tauri Clippy passed with `-D warnings`.
 
 ## Limits
 

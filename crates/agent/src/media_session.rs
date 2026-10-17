@@ -215,6 +215,12 @@ impl MediaSessionReceiver {
 mod tests {
     use super::*;
     use crate::protocol::SessionId;
+    use crate::session_transport::spawn_session_transport;
+    use crate::transport::{pair_over_stream, HandshakeRole};
+    use crate::trust::DeviceIdentity;
+    use std::time::Duration;
+    use tokio::io::duplex;
+    use tokio::time::timeout;
 
     fn frame(session_id: SessionId, target: DeviceId, sequence: u64, timestamp: u64) -> MediaFrame {
         MediaFrame {
@@ -284,5 +290,61 @@ mod tests {
             MediaFrame::decode(&truncated),
             Err(MediaSessionError::InvalidFrame)
         ));
+    }
+
+    #[tokio::test]
+    async fn typed_window_and_display_frames_cross_encrypted_lanes_with_file_work() {
+        let (left_identity, right_identity) =
+            (DeviceIdentity::generate(), DeviceIdentity::generate());
+        let (left_stream, right_stream) = duplex(2 * 1024 * 1024);
+        let (left_paired, right_paired) = tokio::join!(
+            pair_over_stream(
+                left_stream,
+                &left_identity,
+                HandshakeRole::Initiator,
+                |_| async { true }
+            ),
+            pair_over_stream(
+                right_stream,
+                &right_identity,
+                HandshakeRole::Responder,
+                |_| async { true }
+            ),
+        );
+        let (left_sender, left_receiver, _) = left_paired.unwrap().into_encrypted();
+        let (right_sender, right_receiver, _) = right_paired.unwrap().into_encrypted();
+        let (left, _left_worker) = spawn_session_transport(left_sender, left_receiver);
+        let (right, _right_worker) = spawn_session_transport(right_sender, right_receiver);
+        let session = SessionId::new();
+        let window = frame(session, right_identity.device_id(), 0, 100);
+        let display = frame(session, right_identity.device_id(), 0, 200);
+        let mut window_receiver =
+            MediaSessionReceiver::new(session, right_identity.device_id(), MediaLane::Window);
+        let mut display_receiver =
+            MediaSessionReceiver::new(session, right_identity.device_id(), MediaLane::Display);
+
+        let (window_send, display_send, file_send) = tokio::join!(
+            send_media_frame(&left.window_video.sender, MediaLane::Window, &window),
+            send_media_frame(&left.display_video.sender, MediaLane::Display, &display),
+            left.files.sender.send(b"file-operation".to_vec()),
+        );
+        window_send.unwrap();
+        display_send.unwrap();
+        file_send.unwrap();
+
+        let (window_bytes, display_bytes, file_bytes) = tokio::join!(
+            timeout(Duration::from_secs(2), right.window_video.receiver.recv()),
+            timeout(Duration::from_secs(2), right.display_video.receiver.recv()),
+            timeout(Duration::from_secs(2), right.files.receiver.recv()),
+        );
+        let window_decoded = window_receiver
+            .accept(&window_bytes.unwrap().unwrap())
+            .unwrap();
+        let display_decoded = display_receiver
+            .accept(&display_bytes.unwrap().unwrap())
+            .unwrap();
+        assert_eq!(window_decoded, window);
+        assert_eq!(display_decoded, display);
+        assert_eq!(file_bytes.unwrap().as_deref(), Some(&b"file-operation"[..]));
     }
 }
