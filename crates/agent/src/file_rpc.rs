@@ -1,7 +1,9 @@
 //! Request/response RPC for a user-granted Shared Workspace over an already
 //! authenticated, encrypted session. This layer never accepts host-absolute paths.
 
-use crate::shared_files::{SharedEntry, SharedWorkspace, WorkspaceUpload, MAX_READ_RANGE};
+use crate::shared_files::{
+    SharedEntry, SharedFileMetadata, SharedWorkspace, WorkspaceUpload, MAX_READ_RANGE,
+};
 use crate::transport::{EncryptedReceiver, EncryptedSender, TransportError, MAX_ENCRYPTED_MESSAGE};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -90,6 +92,9 @@ pub enum FileRequest {
         offset: u64,
         length: usize,
     },
+    Metadata {
+        path: String,
+    },
     CreateDirectory {
         path: String,
     },
@@ -130,6 +135,7 @@ pub enum FileRequest {
 pub enum FileResponse {
     Entries { entries: Vec<SharedEntry> },
     Bytes { bytes: Vec<u8> },
+    FileMetadata { metadata: SharedFileMetadata },
     Transfer { transfer: Uuid },
     Progress { written: u64 },
     Digest { sha256: [u8; 32] },
@@ -221,6 +227,9 @@ fn dispatch(
                 .read_file_range(&path, offset, length)
                 .map(|bytes| FileResponse::Bytes { bytes })
         }
+        FileRequest::Metadata { path } => workspace
+            .file_metadata(&path)
+            .map(|metadata| FileResponse::FileMetadata { metadata }),
         FileRequest::CreateDirectory { path } => {
             workspace.create_directory(&path).map(|()| FileResponse::Ok)
         }
@@ -523,6 +532,10 @@ mod tests {
         assert!(matches!(
             local.request(FileRequest::ReadRange { path: "visible.txt".into(), offset: 0, length: replacement.len() }).await.unwrap(),
             FileResponse::Bytes { bytes } if bytes == replacement
+        ));
+        assert!(matches!(
+            local.request(FileRequest::Metadata { path: "visible.txt".into() }).await.unwrap(),
+            FileResponse::FileMetadata { metadata } if metadata.size == replacement.len() as u64 && metadata.sha256 == sha256(replacement)
         ));
     }
 }

@@ -61,14 +61,16 @@ struct PairingResult {
 }
 
 #[derive(Clone, Serialize)]
-struct RemoteUploadProgress {
+struct RemoteTransferProgress {
     peer_device_id: String,
+    direction: &'static str,
     bytes_sent: u64,
     total_bytes: u64,
     complete: bool,
 }
 
 static NEXT_PAIRING_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static NEXT_DOWNLOAD_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 #[derive(Serialize)]
 struct NetworkStatus {
@@ -540,6 +542,139 @@ async fn read_remote_file_range(
 }
 
 #[tauri::command]
+async fn download_remote_file_to_path(
+    app: tauri::AppHandle,
+    peer_device_id: String,
+    path: String,
+    expected_size: u64,
+    destination_path: String,
+    pairing: tauri::State<'_, PairingState>,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    use tokio::io::AsyncWriteExt;
+
+    let destination = std::path::PathBuf::from(destination_path);
+    let parent = destination.parent().ok_or("save location has no parent folder")?;
+    let name = destination.file_name().ok_or("save location has no file name")?;
+    if name.is_empty()
+        || !tokio::fs::metadata(parent)
+            .await
+            .map_err(|error| error.to_string())?
+            .is_dir()
+    {
+        return Err("save location is not in an available folder".into());
+    }
+    match tokio::fs::symlink_metadata(&destination).await {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => return Err("save location exists but is not a regular file".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+
+    let client = remote_file_client(&pairing, &peer_device_id)?;
+    let starting_metadata = match client
+        .request(FileRequest::Metadata { path: path.clone() })
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        FileResponse::FileMetadata { metadata } if metadata.size == expected_size => metadata,
+        FileResponse::FileMetadata { .. } => {
+            return Err("peer file changed since the workspace listing; refresh and retry".into())
+        }
+        FileResponse::Error { message } => return Err(message),
+        _ => return Err("peer returned an unexpected file metadata response".into()),
+    };
+    let (temporary, mut output) = loop {
+        let id = NEXT_DOWNLOAD_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = parent.join(format!(".crosswarp-{}-{id}.part", std::process::id()));
+        match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .await
+        {
+            Ok(file) => break (path, file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    };
+    let emit_progress = |bytes_sent, complete| {
+        let _ = app.emit(
+            "remote-transfer-progress",
+            RemoteTransferProgress {
+                peer_device_id: peer_device_id.clone(),
+                direction: "download",
+                bytes_sent,
+                total_bytes: expected_size,
+                complete,
+            },
+        );
+    };
+    emit_progress(0, false);
+    let result = async {
+        let mut offset = 0u64;
+        while offset < expected_size {
+            let length = (expected_size - offset).min(MAX_RPC_READ_CHUNK as u64) as usize;
+            let bytes = match client
+                .request(FileRequest::ReadRange {
+                    path: path.clone(),
+                    offset,
+                    length,
+                })
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                FileResponse::Bytes { bytes } if bytes.len() == length => bytes,
+                FileResponse::Bytes { .. } => {
+                    return Err(
+                        "peer file changed during download; received an incomplete range".into(),
+                    )
+                }
+                FileResponse::Error { message } => return Err(message),
+                _ => return Err("peer returned an unexpected download response".into()),
+            };
+            output
+                .write_all(&bytes)
+                .await
+                .map_err(|error| error.to_string())?;
+            offset += bytes.len() as u64;
+            emit_progress(offset, false);
+        }
+        let ending_metadata = match client
+            .request(FileRequest::Metadata { path: path.clone() })
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            FileResponse::FileMetadata { metadata } => metadata,
+            FileResponse::Error { message } => return Err(message),
+            _ => return Err("peer returned an unexpected file verification response".into()),
+        };
+        if ending_metadata != starting_metadata {
+            return Err("peer file changed during download; temporary data was discarded".into());
+        }
+        output.sync_all().await.map_err(|error| error.to_string())?;
+        drop(output);
+        commit_download_file(&temporary, &destination).await?;
+        emit_progress(expected_size, true);
+        Ok(())
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&temporary).await;
+    }
+    result
+}
+
+async fn commit_download_file(
+    temporary: &std::path::Path,
+    destination: &std::path::Path,
+) -> Result<(), String> {
+    tokio::fs::rename(temporary, destination)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn upload_remote_file(
     app: tauri::AppHandle,
     peer_device_id: String,
@@ -560,8 +695,8 @@ async fn upload_remote_file(
     let total_bytes = metadata.len();
     let emit_progress = |bytes_sent, complete| {
         let _ = app.emit(
-            "remote-upload-progress",
-            RemoteUploadProgress { peer_device_id: peer_device_id.clone(), bytes_sent, total_bytes, complete },
+            "remote-transfer-progress",
+            RemoteTransferProgress { peer_device_id: peer_device_id.clone(), direction: "upload", bytes_sent, total_bytes, complete },
         );
     };
     emit_progress(0, false);
@@ -775,6 +910,7 @@ fn main() {
             list_remote_workspace,
             create_remote_directory,
             read_remote_file_range,
+            download_remote_file_to_path,
             upload_remote_file,
             rename_remote_entry,
             delete_remote_file,
@@ -784,4 +920,36 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run CrossWarp desktop shell");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn completed_download_atomically_replaces_the_selected_file() {
+        let root = std::env::temp_dir().join(format!(
+            "crosswarp-download-{}-{}",
+            std::process::id(),
+            NEXT_DOWNLOAD_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        tokio::fs::create_dir(&root).await.unwrap();
+        let destination = root.join("report.txt");
+        let temporary = root.join(".crosswarp-transfer.part");
+        tokio::fs::write(&destination, b"old contents").await.unwrap();
+        tokio::fs::write(&temporary, b"complete replacement")
+            .await
+            .unwrap();
+
+        commit_download_file(&temporary, &destination)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tokio::fs::read(&destination).await.unwrap(),
+            b"complete replacement"
+        );
+        assert!(!temporary.exists());
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
 }

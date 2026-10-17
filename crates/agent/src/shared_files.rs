@@ -61,6 +61,12 @@ pub struct SharedEntry {
     pub modified_unix_ms: Option<u64>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SharedFileMetadata {
+    pub size: u64,
+    pub sha256: [u8; 32],
+}
+
 /// A user-selected storage root held as an open directory capability.
 pub struct SharedWorkspace {
     root_path: PathBuf,
@@ -163,6 +169,33 @@ impl SharedWorkspace {
         let mut bytes = Vec::with_capacity(length);
         file.take(length as u64).read_to_end(&mut bytes)?;
         Ok(bytes)
+    }
+
+    /// Return a bounded-memory content digest and size for one regular file.
+    pub fn file_metadata(
+        &self,
+        relative_file: &str,
+    ) -> Result<SharedFileMetadata, SharedFilesError> {
+        validate_relative(Path::new(relative_file))?;
+        let mut file = self.root.open(relative_file).map_err(map_not_found)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(SharedFilesError::WrongEntryType);
+        }
+        let size = metadata.len();
+        let mut hasher = Sha256::new();
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        Ok(SharedFileMetadata {
+            size,
+            sha256: hasher.finalize().into(),
+        })
     }
 
     pub fn create_directory(&self, relative_path: &str) -> Result<(), SharedFilesError> {
@@ -425,6 +458,10 @@ mod tests {
             service.read_file_range("docs/readme.txt", 2, 3).unwrap(),
             b"cde"
         );
+        let metadata = service.file_metadata("docs/readme.txt").unwrap();
+        assert_eq!(metadata.size, 6);
+        let digest: [u8; 32] = Sha256::digest(b"abcdef").into();
+        assert_eq!(metadata.sha256, digest);
     }
 
     #[test]

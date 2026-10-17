@@ -9,19 +9,21 @@
 - The peer view lists and navigates directories, creates directories, downloads files in bounded ranges, and uploads a user-selected file using bounded chunks and SHA-256 verification.
 - The peer view also exposes confirmation-gated rename and regular-file delete. Upload can replace an existing regular file after explicit UI confirmation; the receiver verifies declared length and SHA-256 before capability-rooted atomic replacement. A bad checksum or missing confirmation leaves the original file intact.
 - Each acknowledged upload chunk emits the bytes sent and total length to the desktop UI; the active peer workspace displays byte count and percentage, disables a second upload during transfer, and clears progress on success or failure.
+- Downloads now use the OS save dialog and stream authenticated 200 KiB ranges directly to a same-folder temporary file. The peer supplies a size and SHA-256 before and after the ranges; if either differs, temporary data is deleted and the selected destination is left unchanged. The destination is atomically replaced only after successful verification and flush; the WebView no longer accumulates whole downloads in memory. Download progress uses the same acknowledged-byte UI.
 - The desktop now provides an explicit peer disconnect command. It aborts the actor that owns the encrypted stream and clears local active/client state. This path compiled and the app launched; no two-PC disconnect/reconnect test has run.
 - The actor reads the current workspace grant for each inbound request. If no folder is granted, it returns an explicit error and does not access a host path.
 
 ## Checks on JACK
 
-- `cargo test --workspace`: **40 passed, 0 failed**. Tests cover replacement confirmation and checksum failure preserving the original, and an encrypted loopback RPC session that replaces a host-side file and reads the new contents back. The RPC test also verifies a no-grant response, updates the host grant on the live connection, verifies a listing, and issues requests concurrently from both endpoints. The Windows input validation test does not inject system input.
+- `cargo test --workspace`: **40 passed, 0 failed**. Tests cover replacement confirmation and checksum failure preserving the original, file metadata size/digest inside the capability root, and an encrypted loopback RPC session that replaces a host-side file, reads it back, and verifies remote metadata. The RPC test also verifies a no-grant response, updates the host grant on the live connection, verifies a listing, and issues requests concurrently from both endpoints. The Windows input validation test does not inject system input.
+- `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml`: **1 passed, 0 failed**. The Windows Tauri test verified the completed download commit atomically replaces an existing destination with the temporary file's contents.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings`: passed.
 - `cargo fmt --all -- --check`: passed.
 - `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`: passed.
 - `npm run typecheck` from `apps/desktop`: passed.
-- `npm run build` from `apps/desktop`: production Tauri build succeeded after adding session disconnect.
-- The built desktop executable launched and responded as process **PID 25040**. UI click-through and live peer operation were not tested.
+- `npm run build` from `apps/desktop`: production CrossWarp Tauri build succeeded after adding streamed downloads and pre/post SHA-256 verification.
+- The built CrossWarp executable launched and responded as process **PID 24480**. UI click-through and live peer operation were not tested.
 
 ## Remaining proof
 

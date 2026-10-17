@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 
 type Capability = {
   capability: string;
@@ -29,7 +29,7 @@ type NetworkStatus = { device_id: string; listen_address: string; discovery: str
 type Peer = { device_id: string; addresses: string[] };
 type PairingChallenge = { request_id: string; local_device: string; peer_device: string; verification_code: string };
 type PairingResult = { peer_device_id: string; trusted: boolean; transport_active: boolean; detail: string };
-type RemoteUploadProgress = { peer_device_id: string; bytes_sent: number; total_bytes: number; complete: boolean };
+type RemoteTransferProgress = { peer_device_id: string; direction: "upload" | "download"; bytes_sent: number; total_bytes: number; complete: boolean };
 
 const labels: Record<string, { title: string; glyph: string }> = {
   input: { title: "Shared input", glyph: "↔" },
@@ -50,7 +50,7 @@ export function App() {
   const [pairingResult, setPairingResult] = useState<PairingResult | null>(null);
   const [remoteEntries, setRemoteEntries] = useState<WorkspaceEntry[] | null>(null);
   const [remoteDirectory, setRemoteDirectory] = useState<string | null>(null);
-  const [uploadProgress, setUploadProgress] = useState<RemoteUploadProgress | null>(null);
+  const [transferProgress, setTransferProgress] = useState<RemoteTransferProgress | null>(null);
 
   useEffect(() => {
     invoke<LocalStatus>("get_local_status")
@@ -76,7 +76,7 @@ export function App() {
       listen<PairingChallenge>("pairing-challenge", (event) => setChallenge(event.payload)),
       listen<PairingResult>("pairing-established", (event) => setPairingResult(event.payload)),
       listen<string>("pairing-ended", (event) => setPairingResult((current) => current?.peer_device_id === event.payload ? null : current)),
-      listen<RemoteUploadProgress>("remote-upload-progress", (event) => setUploadProgress(event.payload)),
+      listen<RemoteTransferProgress>("remote-transfer-progress", (event) => setTransferProgress(event.payload)),
     ])
       .then((dispose) => { unlisten = dispose; })
       .catch((reason: unknown) => setError(String(reason)));
@@ -150,7 +150,7 @@ export function App() {
       setPairingResult(null);
       setRemoteEntries(null);
       setRemoteDirectory(null);
-      setUploadProgress(null);
+      setTransferProgress(null);
       setError(null);
     } catch (reason) { setError(String(reason)); }
   }
@@ -194,12 +194,12 @@ export function App() {
     if (replaceExisting && !window.confirm(`Replace the existing peer file ${fileName}? The new file will appear only after its upload and SHA-256 check succeed.`)) return;
     const destinationPath = [remoteDirectory, fileName].filter(Boolean).join("/");
     try {
-      setUploadProgress({ peer_device_id: pairingResult.peer_device_id, bytes_sent: 0, total_bytes: 0, complete: false });
+      setTransferProgress({ peer_device_id: pairingResult.peer_device_id, direction: "upload", bytes_sent: 0, total_bytes: 0, complete: false });
       await invoke("upload_remote_file", { peerDeviceId: pairingResult.peer_device_id, destinationPath, sourcePath, replaceExisting });
       await refreshRemoteDirectory(remoteDirectory);
       setError(null);
-      setUploadProgress(null);
-    } catch (reason) { setUploadProgress(null); setError(String(reason)); }
+      setTransferProgress(null);
+    } catch (reason) { setTransferProgress(null); setError(String(reason)); }
   }
 
   async function renameRemoteEntry(entry: WorkspaceEntry) {
@@ -227,29 +227,19 @@ export function App() {
 
   async function downloadRemoteFile(entry: WorkspaceEntry) {
     if (!pairingResult) return;
+    const destinationPath = await save({ title: "Save file from peer", defaultPath: entry.name });
+    if (!destinationPath) return;
     try {
-      const parts: BlobPart[] = [];
-      const chunkSize = 200 * 1024;
-      for (let offset = 0; offset < entry.size; offset += chunkSize) {
-        const bytes = await invoke<number[]>("read_remote_file_range", {
-          peerDeviceId: pairingResult.peer_device_id,
-          path: entry.relative_path,
-          offset,
-          length: Math.min(chunkSize, entry.size - offset),
-        });
-        const chunk = Uint8Array.from(bytes);
-        const copy = new ArrayBuffer(chunk.byteLength);
-        new Uint8Array(copy).set(chunk);
-        parts.push(copy);
-      }
-      const url = URL.createObjectURL(new Blob(parts));
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = entry.name;
-      anchor.click();
-      URL.revokeObjectURL(url);
+      setTransferProgress({ peer_device_id: pairingResult.peer_device_id, direction: "download", bytes_sent: 0, total_bytes: entry.size, complete: false });
+      await invoke("download_remote_file_to_path", {
+        peerDeviceId: pairingResult.peer_device_id,
+        path: entry.relative_path,
+        expectedSize: entry.size,
+        destinationPath,
+      });
+      setTransferProgress(null);
       setError(null);
-    } catch (reason) { setError(String(reason)); }
+    } catch (reason) { setTransferProgress(null); setError(String(reason)); }
   }
 
   return (
@@ -296,7 +286,7 @@ export function App() {
           {peers.length > 0 && <section className="setup-panel"><div className="workspace-content"><strong>Discovered devices · not trusted yet</strong><p>Pair only when both people can compare and approve the same six-digit code.</p>{peers.map((peer) => <div className="peer-row" key={peer.device_id}><span>{peer.device_id} · {peer.addresses.join(", ")}</span><button onClick={() => peer.addresses[0] && pairWith(peer, peer.addresses[0])}>Request pairing</button></div>)}</div></section>}
           {pairingResult && <section className="setup-panel"><div className="workspace-content"><strong>Trusted peer · encrypted transport active</strong><p>{pairingResult.detail}</p><div className="workspace-root">Authenticated peer · {pairingResult.peer_device_id}</div><div className="workspace-actions"><button onClick={() => void disconnectPeer()}>Disconnect peer</button></div></div></section>}
 
-          {pairingResult?.transport_active && <section className="setup-panel workspace-panel"><div className="setup-symbol">⇄</div><div className="workspace-content"><strong>Peer Shared Workspace</strong><p>Contents are requested over the authenticated encrypted connection. The peer must grant a folder before it appears here.</p><div className="workspace-actions"><button onClick={() => void refreshRemoteDirectory(remoteDirectory)}>Refresh peer folder</button><button onClick={() => void createRemoteFolder()}>New peer folder</button><button disabled={Boolean(uploadProgress && !uploadProgress.complete)} onClick={() => void uploadRemoteFile()}>Upload file</button></div>{uploadProgress?.peer_device_id === pairingResult.peer_device_id && <div className="workspace-root" role="status">{uploadProgress.complete ? "Upload verified" : "Uploading"} · {uploadProgress.bytes_sent.toLocaleString()} / {uploadProgress.total_bytes.toLocaleString()} bytes{uploadProgress.total_bytes > 0 ? ` · ${Math.floor(uploadProgress.bytes_sent * 100 / uploadProgress.total_bytes)}%` : ""}</div>}{remoteEntries && <><div className="workspace-root">Remote folder · {remoteDirectory || "/"}</div><div className="file-list">{remoteDirectory && <button className="file-row folder-row" onClick={() => void refreshRemoteDirectory(remoteDirectory.includes("/") ? remoteDirectory.slice(0, remoteDirectory.lastIndexOf("/")) : null)}>↰ <span>Parent folder</span></button>}{remoteEntries.map((entry) => <div className="remote-entry" key={entry.relative_path}><button className="file-row" onClick={() => entry.kind === "directory" ? void refreshRemoteDirectory(entry.relative_path) : void downloadRemoteFile(entry)}><span>{entry.kind === "directory" ? "▰" : "▤"} {entry.name}</span><small>{entry.kind === "directory" ? "Folder" : `${entry.size.toLocaleString()} bytes · download`}</small></button><div className="remote-entry-actions"><button onClick={() => void renameRemoteEntry(entry)}>Rename</button>{entry.kind === "file" && <button onClick={() => void deleteRemoteFile(entry)}>Delete</button>}</div></div>)}{remoteEntries.length === 0 && <span className="empty-files">Peer folder is empty.</span>}</div></>}</div></section>}
+          {pairingResult?.transport_active && <section className="setup-panel workspace-panel"><div className="setup-symbol">⇄</div><div className="workspace-content"><strong>Peer Shared Workspace</strong><p>Contents are requested over the authenticated encrypted connection. The peer must grant a folder before it appears here.</p><div className="workspace-actions"><button onClick={() => void refreshRemoteDirectory(remoteDirectory)}>Refresh peer folder</button><button onClick={() => void createRemoteFolder()}>New peer folder</button><button disabled={Boolean(transferProgress && !transferProgress.complete)} onClick={() => void uploadRemoteFile()}>Upload file</button></div>{transferProgress?.peer_device_id === pairingResult.peer_device_id && <div className="workspace-root" role="status">{transferProgress.complete ? (transferProgress.direction === "upload" ? "Upload verified" : "Download saved") : (transferProgress.direction === "upload" ? "Uploading" : "Downloading")} · {transferProgress.bytes_sent.toLocaleString()} / {transferProgress.total_bytes.toLocaleString()} bytes{transferProgress.total_bytes > 0 ? ` · ${Math.floor(transferProgress.bytes_sent * 100 / transferProgress.total_bytes)}%` : ""}</div>}{remoteEntries && <><div className="workspace-root">Remote folder · {remoteDirectory || "/"}</div><div className="file-list">{remoteDirectory && <button className="file-row folder-row" onClick={() => void refreshRemoteDirectory(remoteDirectory.includes("/") ? remoteDirectory.slice(0, remoteDirectory.lastIndexOf("/")) : null)}>↰ <span>Parent folder</span></button>}{remoteEntries.map((entry) => <div className="remote-entry" key={entry.relative_path}><button className="file-row" onClick={() => entry.kind === "directory" ? void refreshRemoteDirectory(entry.relative_path) : void downloadRemoteFile(entry)}><span>{entry.kind === "directory" ? "▰" : "▤"} {entry.name}</span><small>{entry.kind === "directory" ? "Folder" : `${entry.size.toLocaleString()} bytes · download`}</small></button><div className="remote-entry-actions"><button onClick={() => void renameRemoteEntry(entry)}>Rename</button>{entry.kind === "file" && <button onClick={() => void deleteRemoteFile(entry)}>Delete</button>}</div></div>)}{remoteEntries.length === 0 && <span className="empty-files">Peer folder is empty.</span>}</div></>}</div></section>}
 
           {platform && <section className="setup-panel"><div className="setup-symbol">⌘</div><div className="workspace-content"><strong>Windows compatibility diagnostics · OS floors only</strong><p>{platform.os_name}{platform.version ? ` · build ${platform.version.build}` : ""} · {platform.architecture}</p><div className="workspace-root">IDD 1.11 documented OS floor: {platform.meets_iddcx_111_os_floor ? "met" : "not met"} · HWND capture API floor (Windows 10 1903): {platform.meets_wgc_create_for_window_os_floor ? "met" : "not met"}</div><p>These checks report documented OS build boundaries only. They do not confirm an installed driver, capture permission, hardware support, or complete feature compatibility.</p></div></section>}
 
