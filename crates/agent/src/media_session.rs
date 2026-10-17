@@ -9,9 +9,11 @@ use crate::transport::MAX_ENCRYPTED_MESSAGE;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// JSON envelope overhead is reserved inside the encrypted record limit.
-pub const MAX_MEDIA_PAYLOAD_BYTES: usize = MAX_ENCRYPTED_MESSAGE - 512;
+/// Binary payload budget reserves the encrypted record tag, a 2-byte header
+/// length, and up to 512 bytes for bounded JSON metadata.
+pub const MAX_MEDIA_PAYLOAD_BYTES: usize = MAX_ENCRYPTED_MESSAGE - 1 - 2 - 512;
 const MAX_DIMENSION: u32 = 16_384;
+const MAX_MEDIA_HEADER_BYTES: usize = 512;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -28,7 +30,7 @@ pub enum MediaLane {
     Display,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MediaFrame {
     pub session_id: SessionId,
     pub target: DeviceId,
@@ -41,6 +43,20 @@ pub struct MediaFrame {
     pub codec: VideoCodec,
     pub key_frame: bool,
     pub payload: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct MediaFrameHeader {
+    session_id: SessionId,
+    target: DeviceId,
+    stream_id: u64,
+    sequence: u64,
+    timestamp_100ns: u64,
+    width: u32,
+    height: u32,
+    codec: VideoCodec,
+    key_frame: bool,
+    payload_len: u32,
 }
 
 #[derive(Debug, Error)]
@@ -70,6 +86,69 @@ impl MediaFrame {
         }
         Ok(())
     }
+
+    fn encode(&self) -> Result<Vec<u8>, MediaSessionError> {
+        self.validate()?;
+        let header = MediaFrameHeader {
+            session_id: self.session_id,
+            target: self.target.clone(),
+            stream_id: self.stream_id,
+            sequence: self.sequence,
+            timestamp_100ns: self.timestamp_100ns,
+            width: self.width,
+            height: self.height,
+            codec: self.codec,
+            key_frame: self.key_frame,
+            payload_len: u32::try_from(self.payload.len())
+                .map_err(|_| MediaSessionError::InvalidFrame)?,
+        };
+        let header = serde_json::to_vec(&header).map_err(|_| MediaSessionError::InvalidFrame)?;
+        if header.is_empty() || header.len() > MAX_MEDIA_HEADER_BYTES {
+            return Err(MediaSessionError::InvalidFrame);
+        }
+        let total_len = 2usize
+            .checked_add(header.len())
+            .and_then(|size| size.checked_add(self.payload.len()))
+            .ok_or(MediaSessionError::InvalidFrame)?;
+        if total_len > MAX_ENCRYPTED_MESSAGE - 1 {
+            return Err(MediaSessionError::InvalidFrame);
+        }
+        let mut bytes = Vec::with_capacity(total_len);
+        bytes.extend_from_slice(&(header.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&header);
+        bytes.extend_from_slice(&self.payload);
+        Ok(bytes)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, MediaSessionError> {
+        if bytes.len() < 2 || bytes.len() > MAX_ENCRYPTED_MESSAGE - 1 {
+            return Err(MediaSessionError::InvalidFrame);
+        }
+        let header_len = u16::from_be_bytes([bytes[0], bytes[1]]) as usize;
+        if header_len == 0 || header_len > MAX_MEDIA_HEADER_BYTES || bytes.len() < 2 + header_len {
+            return Err(MediaSessionError::InvalidFrame);
+        }
+        let header: MediaFrameHeader = serde_json::from_slice(&bytes[2..2 + header_len])
+            .map_err(|_| MediaSessionError::InvalidFrame)?;
+        let payload = &bytes[2 + header_len..];
+        if payload.len() != header.payload_len as usize {
+            return Err(MediaSessionError::InvalidFrame);
+        }
+        let frame = Self {
+            session_id: header.session_id,
+            target: header.target,
+            stream_id: header.stream_id,
+            sequence: header.sequence,
+            timestamp_100ns: header.timestamp_100ns,
+            width: header.width,
+            height: header.height,
+            codec: header.codec,
+            key_frame: header.key_frame,
+            payload: payload.to_vec(),
+        };
+        frame.validate()?;
+        Ok(frame)
+    }
 }
 
 /// Video is lossy under queue pressure: producers use `try_send` so stale
@@ -87,11 +166,7 @@ pub async fn send_media_frame(
     if !expected {
         return Err(MediaSessionError::WrongLane);
     }
-    let bytes = serde_json::to_vec(frame).map_err(|_| MediaSessionError::InvalidFrame)?;
-    if bytes.len() > MAX_ENCRYPTED_MESSAGE - 1 {
-        return Err(MediaSessionError::InvalidFrame);
-    }
-    channel.try_send(bytes)?;
+    channel.try_send(frame.encode()?)?;
     Ok(())
 }
 
@@ -115,12 +190,7 @@ impl MediaSessionReceiver {
     }
 
     pub fn accept(&mut self, bytes: &[u8]) -> Result<MediaFrame, MediaSessionError> {
-        if bytes.is_empty() || bytes.len() > MAX_ENCRYPTED_MESSAGE - 1 {
-            return Err(MediaSessionError::InvalidFrame);
-        }
-        let frame: MediaFrame =
-            serde_json::from_slice(bytes).map_err(|_| MediaSessionError::InvalidFrame)?;
-        frame.validate()?;
+        let frame = MediaFrame::decode(bytes)?;
         if frame.session_id != self.session_id || frame.target != self.local_device {
             return Err(MediaSessionError::WrongDestination);
         }
@@ -167,10 +237,10 @@ mod tests {
         let target = DeviceId("target".into());
         let mut receiver = MediaSessionReceiver::new(session, target.clone(), MediaLane::Window);
         assert!(receiver
-            .accept(&serde_json::to_vec(&frame(session, target.clone(), 0, 10)).unwrap())
+            .accept(&frame(session, target.clone(), 0, 10).encode().unwrap())
             .is_ok());
         assert!(receiver
-            .accept(&serde_json::to_vec(&frame(session, target, 3, 40)).unwrap())
+            .accept(&frame(session, target, 3, 40).encode().unwrap())
             .is_ok());
     }
 
@@ -181,10 +251,10 @@ mod tests {
         let mut receiver = MediaSessionReceiver::new(session, target.clone(), MediaLane::Display);
         let wrong = frame(session, DeviceId("other".into()), 0, 10);
         assert!(matches!(
-            receiver.accept(&serde_json::to_vec(&wrong).unwrap()),
+            receiver.accept(&wrong.encode().unwrap()),
             Err(MediaSessionError::WrongDestination)
         ));
-        let first = serde_json::to_vec(&frame(session, target.clone(), 1, 20)).unwrap();
+        let first = frame(session, target.clone(), 1, 20).encode().unwrap();
         receiver.accept(&first).unwrap();
         assert!(matches!(
             receiver.accept(&first),
@@ -194,6 +264,24 @@ mod tests {
         invalid.width = MAX_DIMENSION + 1;
         assert!(matches!(
             invalid.validate(),
+            Err(MediaSessionError::InvalidFrame)
+        ));
+    }
+
+    #[test]
+    fn binary_payload_round_trips_without_json_array_expansion() {
+        let session = SessionId::new();
+        let target = DeviceId("target".into());
+        let mut frame = frame(session, target, 0, 10);
+        frame.payload = vec![0xA5; 512 * 1024];
+        let bytes = frame.encode().unwrap();
+        assert!(bytes.len() < frame.payload.len() + MAX_MEDIA_HEADER_BYTES + 2);
+        assert_eq!(MediaFrame::decode(&bytes).unwrap(), frame);
+
+        let mut truncated = bytes;
+        truncated.pop();
+        assert!(matches!(
+            MediaFrame::decode(&truncated),
             Err(MediaSessionError::InvalidFrame)
         ));
     }

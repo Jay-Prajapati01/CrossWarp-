@@ -4,13 +4,13 @@
 
 ## Contract
 
-The window-video and display-video service channels accept a typed frame envelope containing session ID, target device, stream ID, sequence, source timestamp, dimensions, codec, key-frame flag, and encoded payload. H.264, HEVC, AV1, and raw BGRA8 payloads are representable. The transport sender verifies the selected service lane and payload bounds, then uses the lossy bounded queue API; queue pressure returns an error so a real-time producer can discard stale frames rather than block input or files.
+The window-video and display-video service channels accept a typed frame envelope containing session ID, target device, stream ID, sequence, source timestamp, dimensions, codec, key-frame flag, and encoded payload. H.264, HEVC, AV1, and raw BGRA8 payloads are representable. The wire record uses a bounded JSON metadata header followed by the payload as raw binary; it does not JSON-expand video bytes. The transport sender verifies the selected service lane and payload bounds, then uses the lossy bounded queue API; queue pressure returns an error so a real-time producer can discard stale frames rather than block input or files.
 
 The receiver validates frame size, dimensions, session, destination, and monotonic sequence/timestamp. Sequence gaps are valid because the video queues intentionally retain only the newest frames. Replayed, reordered, cross-stream, malformed, or wrong-destination frames are rejected.
 
 ## Verification
 
-`cargo test --workspace`: **51 passed**. New tests verify forward progress across dropped-frame sequence gaps and rejection of wrong targets, replay, and invalid dimensions. Workspace Clippy passed with `-D warnings`; Tauri tests: **2 passed**; Tauri Clippy passed with `-D warnings`.
+`cargo test --workspace`: **52 passed**. Tests verify forward progress across dropped-frame sequence gaps, rejection of wrong targets/replay/invalid dimensions, and binary payload round-trip with a 512 KiB payload without JSON array expansion. Workspace Clippy passed with `-D warnings`; Tauri tests: **2 passed**; Tauri Clippy passed with `-D warnings`.
 
 ## Limits
 
