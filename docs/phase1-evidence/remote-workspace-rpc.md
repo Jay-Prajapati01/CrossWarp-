@@ -7,6 +7,7 @@
 - A pair of endpoints complete the existing explicit two-sided verification-code handshake before the transport is kept alive.
 - A bidirectional session actor owns the encrypted sender and receiver. It correlates requests and responses while serving each endpoint's own granted workspace, so peer UI calls share the stream without competing for its reader.
 - The peer view lists and navigates directories, creates directories, downloads files in bounded ranges, and uploads a user-selected file using bounded chunks and SHA-256 verification.
+- The peer view also exposes confirmation-gated rename and regular-file delete. Replacing/saving to an existing destination is not yet supported; upload refuses to overwrite.
 - The actor reads the current workspace grant for each inbound request. If no folder is granted, it returns an explicit error and does not access a host path.
 
 ## Checks on JACK
@@ -18,7 +19,7 @@
 - `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`: passed.
 - `npm run typecheck` from `apps/desktop`: passed.
 - `npm run build` from `apps/desktop`: production Tauri build succeeded.
-- The built desktop executable launched and responded as process **PID 28544**. UI click-through and live peer operation were not tested.
+- The built desktop executable launched and responded as process **PID 32640** after adding the confirmation-gated remote rename/delete controls. UI click-through and live peer operation were not tested.
 
 ## Remaining proof
 

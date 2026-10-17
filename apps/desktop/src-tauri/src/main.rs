@@ -574,6 +574,43 @@ async fn upload_remote_file(
 }
 
 #[tauri::command]
+async fn rename_remote_entry(
+    peer_device_id: String,
+    source: String,
+    destination: String,
+    confirmed: bool,
+    pairing: tauri::State<'_, PairingState>,
+) -> Result<(), String> {
+    match remote_file_client(&pairing, &peer_device_id)?
+        .request(FileRequest::Rename { source, destination, confirmed })
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        FileResponse::Ok => Ok(()),
+        FileResponse::Error { message } => Err(message),
+        _ => Err("peer returned an unexpected rename response".into()),
+    }
+}
+
+#[tauri::command]
+async fn delete_remote_file(
+    peer_device_id: String,
+    path: String,
+    confirmed: bool,
+    pairing: tauri::State<'_, PairingState>,
+) -> Result<(), String> {
+    match remote_file_client(&pairing, &peer_device_id)?
+        .request(FileRequest::Delete { path, confirmed })
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        FileResponse::Ok => Ok(()),
+        FileResponse::Error { message } => Err(message),
+        _ => Err("peer returned an unexpected delete response".into()),
+    }
+}
+
+#[tauri::command]
 fn discover_local_peers(state: tauri::State<'_, NetworkState>) -> Result<Vec<PeerView>, String> {
     let inner = state.0.lock().map_err(|_| "network state is unavailable")?;
     let browser = inner.browser.as_ref().ok_or("start local network first")?;
@@ -671,6 +708,8 @@ fn main() {
             create_remote_directory,
             read_remote_file_range,
             upload_remote_file,
+            rename_remote_entry,
+            delete_remote_file,
             configure_shared_workspace,
             list_workspace_directory,
             create_workspace_directory
