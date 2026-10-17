@@ -6,6 +6,7 @@ use crate::transport::{EncryptedReceiver, EncryptedSender, TransportError, MAX_E
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use uuid::Uuid;
@@ -80,7 +81,7 @@ pub enum FileResponse {
 pub async fn serve_file_rpc<S, R>(
     mut sender: EncryptedSender<S>,
     mut receiver: EncryptedReceiver<R>,
-    workspace: SharedWorkspace,
+    workspace: Arc<std::sync::Mutex<Option<Arc<SharedWorkspace>>>>,
 ) -> Result<(), FileRpcError>
 where
     S: AsyncWrite + Unpin,
@@ -91,7 +92,13 @@ where
         let frame = receiver.receive().await?;
         let request: FileRequest =
             serde_json::from_slice(&frame).map_err(|_| FileRpcError::InvalidMessage)?;
-        let response = dispatch(&workspace, &mut uploads, request);
+        let grant = workspace.lock().ok().and_then(|slot| slot.clone());
+        let response = match grant {
+            Some(grant) => dispatch(&grant, &mut uploads, request),
+            None => FileResponse::Error {
+                message: "this device has not granted a Shared Workspace folder".into(),
+            },
+        };
         let bytes = serde_json::to_vec(&response).map_err(|_| FileRpcError::InvalidMessage)?;
         if bytes.len() > MAX_ENCRYPTED_MESSAGE {
             return Err(FileRpcError::InvalidMessage);
@@ -312,7 +319,7 @@ mod tests {
     async fn file_rpc_runs_over_the_authenticated_encrypted_stream() {
         let tree = TempTree::new();
         fs::write(tree.0.join("visible.txt"), b"workspace data").unwrap();
-        let workspace = SharedWorkspace::open(&tree.0).unwrap();
+        let workspace = Arc::new(std::sync::Mutex::new(None));
         let (client_identity, host_identity) =
             (DeviceIdentity::generate(), DeviceIdentity::generate());
         let (client_stream, host_stream) = tokio::io::duplex(64 * 1024);
@@ -332,9 +339,18 @@ mod tests {
         );
         let (mut client_sender, mut client_receiver, _) = client.unwrap().into_encrypted();
         let (host_sender, host_receiver, _) = host.unwrap().into_encrypted();
-        let server = tokio::spawn(serve_file_rpc(host_sender, host_receiver, workspace));
+        let server = tokio::spawn(serve_file_rpc(
+            host_sender,
+            host_receiver,
+            workspace.clone(),
+        ));
 
         let request = serde_json::to_vec(&FileRequest::List { directory: None }).unwrap();
+        client_sender.send(&request).await.unwrap();
+        let response: FileResponse =
+            serde_json::from_slice(&client_receiver.receive().await.unwrap()).unwrap();
+        assert!(matches!(response, FileResponse::Error { .. }));
+        *workspace.lock().unwrap() = Some(Arc::new(SharedWorkspace::open(&tree.0).unwrap()));
         client_sender.send(&request).await.unwrap();
         let response: FileResponse =
             serde_json::from_slice(&client_receiver.receive().await.unwrap()).unwrap();

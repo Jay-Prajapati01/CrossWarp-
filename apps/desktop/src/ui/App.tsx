@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 
 type Capability = {
@@ -26,6 +27,8 @@ type WorkspaceEntry = { name: string; relative_path: string; kind: "file" | "dir
 type WorkspaceView = { root: string; entries: WorkspaceEntry[] };
 type NetworkStatus = { device_id: string; listen_address: string; discovery: string };
 type Peer = { device_id: string; addresses: string[] };
+type PairingChallenge = { request_id: string; local_device: string; peer_device: string; verification_code: string };
+type PairingResult = { peer_device_id: string; trusted: boolean; transport_active: boolean; detail: string };
 
 const labels: Record<string, { title: string; glyph: string }> = {
   input: { title: "Shared input", glyph: "↔" },
@@ -42,6 +45,8 @@ export function App() {
   const [directory, setDirectory] = useState<string | null>(null);
   const [network, setNetwork] = useState<NetworkStatus | null>(null);
   const [peers, setPeers] = useState<Peer[]>([]);
+  const [challenge, setChallenge] = useState<PairingChallenge | null>(null);
+  const [pairingResult, setPairingResult] = useState<PairingResult | null>(null);
 
   useEffect(() => {
     invoke<LocalStatus>("get_local_status")
@@ -50,6 +55,18 @@ export function App() {
     invoke<HostPlatform>("get_platform_report")
       .then(setPlatform)
       .catch((reason: unknown) => setError(String(reason)));
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void)[] = [];
+    void Promise.all([
+      listen<PairingChallenge>("pairing-challenge", (event) => setChallenge(event.payload)),
+      listen<PairingResult>("pairing-established", (event) => setPairingResult(event.payload)),
+      listen<string>("pairing-ended", (event) => setPairingResult((current) => current?.peer_device_id === event.payload ? null : current)),
+    ])
+      .then((dispose) => { unlisten = dispose; })
+      .catch((reason: unknown) => setError(String(reason)));
+    return () => unlisten.forEach((dispose) => dispose());
   }, []);
 
   async function chooseWorkspace() {
@@ -95,6 +112,23 @@ export function App() {
     } catch (reason) { setError(String(reason)); }
   }
 
+  async function pairWith(peer: Peer, address: string) {
+    try {
+      setPairingResult(null);
+      const result = await invoke<PairingResult>("pair_with_peer", { peer: { device_id: peer.device_id, address } });
+      setPairingResult(result);
+      setError(null);
+    } catch (reason) { setError(String(reason)); }
+  }
+
+  async function respondToPairing(approved: boolean) {
+    if (!challenge) return;
+    try {
+      await invoke("respond_to_pairing", { requestId: challenge.request_id, approved });
+      setChallenge(null);
+    } catch (reason) { setError(String(reason)); setChallenge(null); }
+  }
+
   return (
     <main className="shell">
       <aside className="rail" aria-label="Main navigation">
@@ -111,7 +145,7 @@ export function App() {
       <section className="content" id="workspace">
         <header className="topbar">
           <div className="breadcrumb"><span>Unified Workspace</span><span className="slash">/</span><strong>Overview</strong></div>
-          <div className="top-actions"><span className="status-pill"><i /> Disconnected</span><button className="icon-button" disabled aria-label="Notifications, not available yet">♧</button></div>
+          <div className="top-actions"><span className="status-pill"><i /> {pairingResult?.transport_active ? "Encrypted transport active" : "Disconnected"}</span><button className="icon-button" disabled aria-label="Notifications, not available yet">♧</button></div>
         </header>
 
         <div className="page">
@@ -136,6 +170,9 @@ export function App() {
             <div className="peer-placeholder"><span className="add-peer">＋</span><span><strong>{peers.length ? `${peers.length} peer${peers.length === 1 ? "" : "s"} discovered` : network ? "Listening for peers" : "No peer session"}</strong><small>{network ? `${network.discovery} · ${network.listen_address}` : "Start local discovery to advertise this device and find others."}</small></span></div>
           </section>
 
+          {peers.length > 0 && <section className="setup-panel"><div className="workspace-content"><strong>Discovered devices · not trusted yet</strong><p>Pair only when both people can compare and approve the same six-digit code.</p>{peers.map((peer) => <div className="peer-row" key={peer.device_id}><span>{peer.device_id} · {peer.addresses.join(", ")}</span><button onClick={() => peer.addresses[0] && pairWith(peer, peer.addresses[0])}>Request pairing</button></div>)}</div></section>}
+          {pairingResult && <section className="setup-panel"><div className="workspace-content"><strong>Trusted peer · encrypted transport active</strong><p>{pairingResult.detail}</p><div className="workspace-root">Authenticated peer · {pairingResult.peer_device_id}</div></div></section>}
+
           {platform && <section className="setup-panel"><div className="setup-symbol">⌘</div><div className="workspace-content"><strong>Windows compatibility diagnostics · OS floors only</strong><p>{platform.os_name}{platform.version ? ` · build ${platform.version.build}` : ""} · {platform.architecture}</p><div className="workspace-root">IDD 1.11 documented OS floor: {platform.meets_iddcx_111_os_floor ? "met" : "not met"} · HWND capture API floor (Windows 10 1903): {platform.meets_wgc_create_for_window_os_floor ? "met" : "not met"}</div><p>These checks report documented OS build boundaries only. They do not confirm an installed driver, capture permission, hardware support, or complete feature compatibility.</p></div></section>}
 
           {network && <section className="setup-panel"><div className="setup-symbol">⌁</div><div className="workspace-content"><strong>Device identity and LAN transport</strong><p>Identity is saved with Windows DPAPI. Discovery advertisements are hints only; authenticated pairing and remote capabilities are not connected to this UI yet.</p><div className="workspace-root">Device fingerprint · {network.device_id}</div>{peers.map((peer) => <div className="workspace-root" key={peer.device_id}>Untrusted discovered peer · {peer.device_id} · {peer.addresses.join(", ")}</div>)}</div></section>}
@@ -155,7 +192,9 @@ export function App() {
             })}
           </section>
 
-          {error && <div className="error-banner" role="alert">Local status could not be loaded: {error}</div>}
+          {error && <div className="error-banner" role="alert">{error}</div>}
+
+          {challenge && <div className="pairing-overlay"><section className="pairing-dialog" role="alertdialog" aria-modal="true" aria-labelledby="pairing-title"><p className="eyebrow">TWO-SIDED DEVICE APPROVAL</p><h2 id="pairing-title">Confirm this peer</h2><p>Compare this code with the other computer. Approve only if both screens show the same code.</p><div className="pairing-code">{challenge.verification_code}</div><div className="workspace-root">Peer fingerprint · {challenge.peer_device}</div><div className="workspace-actions"><button onClick={() => void respondToPairing(true)}>Approve pairing</button><button onClick={() => void respondToPairing(false)}>Reject</button></div></section></div>}
 
           <section className="setup-panel workspace-panel">
             <div className="setup-symbol">✦</div>
