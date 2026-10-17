@@ -12,7 +12,7 @@ cmake --build artifacts/capture-smoke-build --config Release --parallel 4
 For a visible app window, obtain its HWND from a process you own, then capture one frame:
 
 ```powershell
-$p = Get-Process -Id <your-window-process-id>
+$p = Get-Process -Id 1234 # Replace 1234 with a process ID for a visible window you own.
 $hwnd = '0x{0:X}' -f [Int64]$p.MainWindowHandle
 .\artifacts\capture-smoke-build\Release\window-capture-smoke.exe $hwnd artifacts\capture.bmp
 ```

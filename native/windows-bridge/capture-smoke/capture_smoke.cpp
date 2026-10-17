@@ -165,6 +165,8 @@ int wmain(int argc, wchar_t** argv) {
             captureDevice, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, size);
         auto session = pool.CreateCaptureSession(item);
         auto token = pool.FrameArrived([&](const Direct3D11CaptureFramePool& sender, const winrt::Windows::Foundation::IInspectable&) {
+            std::unique_lock resultLock(resultMutex);
+            if (captured) return;
             auto frame = sender.TryGetNextFrame();
             if (!frame) return;
             auto access = frame.Surface().as<::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
@@ -189,10 +191,8 @@ int wmain(int argc, wchar_t** argv) {
                 }
                 context->Unmap(staging.get(), 0);
             }
-            {
-                std::scoped_lock lock(resultMutex);
-                captured = true;
-            }
+            captured = true;
+            resultLock.unlock();
             ready.notify_one();
         });
 
