@@ -58,7 +58,7 @@ pub struct SharedEntry {
     pub relative_path: String,
     pub kind: SharedEntryKind,
     pub size: u64,
-    pub modified_unix_ms: Option<u128>,
+    pub modified_unix_ms: Option<u64>,
 }
 
 /// A user-selected storage root held as an open directory capability.
@@ -126,7 +126,7 @@ impl SharedWorkspace {
                 .modified()
                 .ok()
                 .and_then(|time| time.duration_since(SystemClock::UNIX_EPOCH).ok())
-                .map(|duration| duration.as_millis());
+                .and_then(|duration| duration.as_millis().try_into().ok());
             entries.push(SharedEntry {
                 name,
                 relative_path,

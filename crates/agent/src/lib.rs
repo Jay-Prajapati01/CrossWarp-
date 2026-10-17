@@ -3,6 +3,7 @@
 //! This crate deliberately models each capability independently: starting a
 //! display stream must never implicitly stop input, files, or window portals.
 
+pub mod file_rpc;
 pub mod identity_store;
 pub mod lan;
 pub mod ownership;
@@ -15,6 +16,7 @@ pub mod shared_files;
 pub mod transport;
 pub mod trust;
 
+pub use file_rpc::{serve_file_rpc, FileRequest, FileResponse, FileRpcError, MAX_RPC_UPLOAD_CHUNK};
 pub use identity_store::{IdentityStore, IdentityStoreError};
 pub use lan::{DiscoveredPeer, LanEndpoint, LanError, PeerBrowser};
 pub use ownership::{
