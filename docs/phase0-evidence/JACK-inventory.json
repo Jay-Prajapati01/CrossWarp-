@@ -1,0 +1,100 @@
+{
+  "capturedAtUtc": "2026-10-17T21:03:00.8911251Z",
+  "computerName": "JACK",
+  "manufacturer": "HP",
+  "model": "Victus by HP Gaming Laptop 15-fa1xxx",
+  "operatingSystem": {
+    "caption": "Microsoft Windows 11 Home Single Language",
+    "version": "10.0.26300",
+    "build": "26300",
+    "architecture": "64-bit"
+  },
+  "graphics": [
+    {
+      "name": "Intel(R) UHD Graphics",
+      "driverVersion": "31.0.101.5186",
+      "resolution": "1920x1080"
+    },
+    {
+      "name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "driverVersion": "32.0.16.1088",
+      "resolution": null
+    }
+  ],
+  "monitors": [
+    {
+      "name": "Generic PnP Monitor",
+      "deviceId": "DISPLAY\\CMN1560\\4&3A24A3E&0&UID8388688"
+    },
+    {
+      "name": "Default Monitor",
+      "deviceId": null
+    }
+  ],
+  "elevatedAdministrator": false,
+  "secureBoot": "unavailable: Unable to set proper privileges. Access was denied.",
+  "testSigningEntry": null,
+  "tools": {
+    "git": "J:\\Git\\cmd\\git.exe",
+    "node": "C:\\nvm4w\\nodejs\\node.exe",
+    "npm": "C:\\Users\\jay19\\AppData\\Roaming\\npm\\npm.ps1",
+    "cmake": "C:\\Users\\jay19\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\cmake.exe",
+    "msbuild": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Current\\Bin\\MSBuild.exe",
+    "cl": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\cl.exe",
+    "link": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\link.exe",
+    "rustup": "C:\\Users\\jay19\\.cargo\\bin\\rustup.exe",
+    "rustc": "C:\\Users\\jay19\\.cargo\\bin\\rustc.exe",
+    "cargo": "C:\\Users\\jay19\\.cargo\\bin\\cargo.exe",
+    "inf2cat": "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.26100.0\\x86\\Inf2Cat.exe",
+    "signtool": "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.26100.0\\x64\\signtool.exe",
+    "pnputil": "C:\\windows\\system32\\pnputil.exe"
+  },
+  "visualStudioInstances": [
+    {
+      "installationPath": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community",
+      "displayName": "Visual Studio Community 2022",
+      "installationVersion": "17.14.37806.7"
+    },
+    {
+      "installationPath": "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools",
+      "displayName": "Visual Studio Build Tools 2022",
+      "installationVersion": "17.14.37806.7"
+    }
+  ],
+  "windowsKits": [
+    {
+      "path": "C:\\Program Files (x86)\\Windows Kits\\10",
+      "includeVersions": [
+        "10.0.19041.0",
+        "10.0.26100.0",
+        "wdf"
+      ],
+      "buildVersions": [
+        "10.0.26100.0"
+      ]
+    }
+  ],
+  "network": {
+    "adapters": [
+      {
+        "name": "Ethernet",
+        "status": "Disconnected",
+        "linkSpeed": "0 bps",
+        "description": "Realtek Gaming GbE Family Controller"
+      },
+      {
+        "name": "Wi-Fi",
+        "status": "Up",
+        "linkSpeed": "130 Mbps",
+        "description": "Intel(R) Wi-Fi 6E AX211 160MHz"
+      }
+    ],
+    "ipv4": [
+      {
+        "interface": "Wi-Fi",
+        "address": "192.168.1.5",
+        "prefixLength": 24
+      }
+    ]
+  }
+}
