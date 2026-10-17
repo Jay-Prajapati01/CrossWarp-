@@ -14,6 +14,13 @@ type LocalStatus = {
   implementation: string;
   capabilities: Capability[];
 };
+type HostPlatform = {
+  os_name: string;
+  architecture: string;
+  version: { major: number; minor: number; build: number } | null;
+  meets_iddcx_111_os_floor: boolean;
+  meets_wgc_create_for_window_os_floor: boolean;
+};
 
 type WorkspaceEntry = { name: string; relative_path: string; kind: "file" | "directory"; size: number };
 type WorkspaceView = { root: string; entries: WorkspaceEntry[] };
@@ -29,6 +36,7 @@ const labels: Record<string, { title: string; glyph: string }> = {
 
 export function App() {
   const [status, setStatus] = useState<LocalStatus | null>(null);
+  const [platform, setPlatform] = useState<HostPlatform | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceView | null>(null);
   const [directory, setDirectory] = useState<string | null>(null);
@@ -38,6 +46,9 @@ export function App() {
   useEffect(() => {
     invoke<LocalStatus>("get_local_status")
       .then(setStatus)
+      .catch((reason: unknown) => setError(String(reason)));
+    invoke<HostPlatform>("get_platform_report")
+      .then(setPlatform)
       .catch((reason: unknown) => setError(String(reason)));
   }, []);
 
@@ -124,6 +135,8 @@ export function App() {
             <div className="device-divider" />
             <div className="peer-placeholder"><span className="add-peer">＋</span><span><strong>{peers.length ? `${peers.length} peer${peers.length === 1 ? "" : "s"} discovered` : network ? "Listening for peers" : "No peer session"}</strong><small>{network ? `${network.discovery} · ${network.listen_address}` : "Start local discovery to advertise this device and find others."}</small></span></div>
           </section>
+
+          {platform && <section className="setup-panel"><div className="setup-symbol">⌘</div><div className="workspace-content"><strong>Windows compatibility diagnostics · OS floors only</strong><p>{platform.os_name}{platform.version ? ` · build ${platform.version.build}` : ""} · {platform.architecture}</p><div className="workspace-root">IDD 1.11 documented OS floor: {platform.meets_iddcx_111_os_floor ? "met" : "not met"} · HWND capture API floor (Windows 10 1903): {platform.meets_wgc_create_for_window_os_floor ? "met" : "not met"}</div><p>These checks report documented OS build boundaries only. They do not confirm an installed driver, capture permission, hardware support, or complete feature compatibility.</p></div></section>}
 
           {network && <section className="setup-panel"><div className="setup-symbol">⌁</div><div className="workspace-content"><strong>Device identity and LAN transport</strong><p>Identity is saved with Windows DPAPI. Discovery advertisements are hints only; authenticated pairing and remote capabilities are not connected to this UI yet.</p><div className="workspace-root">Device fingerprint · {network.device_id}</div>{peers.map((peer) => <div className="workspace-root" key={peer.device_id}>Untrusted discovered peer · {peer.device_id} · {peer.addresses.join(", ")}</div>)}</div></section>}
 

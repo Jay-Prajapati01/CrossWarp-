@@ -7,6 +7,7 @@ pub mod identity_store;
 pub mod lan;
 pub mod ownership;
 pub mod peer_store;
+pub mod platform;
 pub mod protocol;
 pub mod qos;
 pub mod session;
@@ -20,6 +21,7 @@ pub use ownership::{
     InputOwner, InputRouter, Rect, ReleasedInput, Surface, SurfaceKind, SurfaceMap,
 };
 pub use peer_store::{PeerStoreError, TrustedPeer, TrustedPeerStore};
+pub use platform::{HostPlatform, WindowsVersion};
 pub use protocol::{Capability, CapabilityState, DeviceId, SessionId};
 pub use qos::{EnqueueError, QosQueue, TrafficClass};
 pub use session::{SessionCoordinator, SessionError, SessionSnapshot};

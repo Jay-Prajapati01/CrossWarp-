@@ -1,10 +1,10 @@
 # Phase 0 Feasibility Plan
 
-**Status:** Phase 0 gate is **NOT PASSED**. The JACK local per-window Windows.Graphics.Capture smoke subtest builds and captures a frame ([evidence](phase0-evidence/wgc-capture-smoke.md)); this is only one component of 0C. The IDD remains unsigned/unloaded, and B-origin portal, unified focus/input, and coexistence are blocked/unverified. No Phase 0 acceptance proof is reported as passed.
+**Status:** Phase 0 gate is **NOT PASSED**. The JACK local per-window Windows.Graphics.Capture smoke subtest builds and captures a frame ([evidence](phase0-evidence/wgc-capture-smoke.md)); this is only one component of 0C. The IDD remains unsigned/unloaded, and B-origin portal, unified focus/input, and coexistence are blocked/unverified. No Phase 0 acceptance proof is reported as passed. The product compatibility goal has expanded to broad Windows versions and mixed-version pairs; the existing two PCs are the first fixtures only. See [WINDOWS_COMPATIBILITY.md](WINDOWS_COMPATIBILITY.md).
 
 ## Gate
 
-Demonstrate on JACK (Windows 11) and DESKTOP-T13BKT8 (Windows 10) that the following are simultaneously viable in one paired session:
+First demonstrate on JACK (Windows 11) and DESKTOP-T13BKT8 (Windows 10) that the following are simultaneously viable in one paired session, then repeat the full sequence across the OS compatibility matrix and representative mixed-version pairs:
 
 1. A genuine Windows extended display registered by a UMDF IddCx IDD on JACK and streamed over the LAN to B.
 2. A selected B-origin Chrome window captured as a live window surface on JACK, preserving the exact originating browser state, with pointer and keyboard input returned to that same process.
@@ -30,7 +30,7 @@ The gate is binary per mechanism: collect machine/OS/build identifiers, signed b
 
 ### 0C — B-origin live window portal
 
-- On B, explicitly select and consent to a Chrome top-level window. Use Windows.Graphics.Capture `CreateForWindow` where supported; keep Chrome's process and page session on B.
+- On B, explicitly select and consent to a Chrome top-level window. Use Windows.Graphics.Capture `CreateForWindow` where supported; for older builds, implement and validate a per-window alternative that preserves the originating process and does not degrade into a whole-desktop mirror. Keep Chrome's process and page session on B.
 - Stream captured window frames to a movable proxy on JACK. Map proxy click, scroll, keyboard, focus, resize and minimize events back to B's existing HWND/process. Confirm unsaved page state and scroll position survive; do not navigate/relaunch the URL.
 - Report protected/unsupported content precisely. Test a non-Chromium window as a second whole-window case. Capture consent and visible active-capture indicator are required.
 
@@ -39,6 +39,12 @@ The gate is binary per mechanism: collect machine/OS/build identifiers, signed b
 - With JACK's extended display receiver still streaming, place a B-native window over part of B's receiver and place the B-origin proxy on JACK.
 - Exercise pointer/keyboard focus across JACK native, virtual-display receiver, B native overlay, and remote proxy. Confirm a single owner for every hit-tested surface, balanced key/button release after disconnect, and a local recovery hotkey.
 - Run a sustained file-like bulk network load while display and portal streams and control packets run; measure p50/p95 action latency, FPS, queue depth and drops. The later file implementation can replace the load generator, but this spike cannot imply file-service completion.
+
+### 0E — Windows version compatibility
+
+- Record the exact OS edition/build/architecture and runtime presence for every tested endpoint.
+- Probe minimum API availability and driver runtime capabilities. Microsoft documents `CreateForWindow` from Windows 10 1903, while IddCx 1.11 can cover Windows 10 1803+ with runtime checks; these are backend constraints, not blanket compatibility claims.
+- Select and prove the correct display and live-window backend for each version band, including legacy Windows versions in the requested product scope. Maintain paired-version test evidence; keep support status **unverified** until all four features pass concurrently.
 
 ## Technical findings to validate during spikes
 
@@ -51,7 +57,7 @@ The gate is binary per mechanism: collect machine/OS/build identifiers, signed b
 
 Required before the spike build:
 
-- Windows 11 JACK and Windows 10 B, both x64, user-session accounts available, and a trusted common LAN.
+- The first lab fixtures are Windows 11 JACK and Windows 10 B, both x64, user-session accounts available, and a trusted common LAN. Additional OS images/physical machines are required to make version-wide claims.
 - Visual Studio 2022 Build Tools/IDE with MSVC C++ desktop workload, Windows SDK, and a WDK version compatible with the targeted OS and IddCx sample. Microsoft's current compatibility table lists WDK 26100.6584 with VS 2022; SDK and WDK build numbers must match. Install the matching WDK Visual Studio extension/build integration and UMDF/driver packaging components ([supported kits](https://learn.microsoft.com/en-us/windows-hardware/drivers/other-wdk-downloads), [kit versioning](https://learn.microsoft.com/en-us/windows-hardware/drivers/download-the-wdk)).
 - CMake and Windows SDK tooling (`msbuild`, `cl`, `inf2cat`, `signtool`, `pnputil`, driver verifier/debug tools as appropriate).
 - Rust stable MSVC target (`x86_64-pc-windows-msvc`) and Cargo for the agent; Node.js/npm and Tauri's Windows prerequisites for the later desktop UI; WebView2 runtime/SDK as required by the chosen Tauri release.

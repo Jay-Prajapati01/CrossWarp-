@@ -3,7 +3,7 @@
 
 **Document version:** 1.0  
 **Status:** Build specification / proposed architecture; not a completed or validated implementation  
-**Target platforms:** Windows 11 primary (JACK), Windows 10 secondary (DESKTOP-T13BKT8)  
+**Target platforms:** Windows client releases broadly; Windows 11 and Windows 10 are the initial hardware fixtures, not the product ceiling
 **Connection:** Same trusted Wi-Fi or local Ethernet network, with no special cable and no cloud account required  
 **Audience:** Product owner, Codex engineering agent, developers, and testers
 
@@ -22,6 +22,8 @@ Build **one installable Windows application**, installed on both computers, that
 
 The initial product is Windows-to-Windows and works locally without cloud infrastructure. It **does not require PowerToys, spacedesk, Chrome account sync, or manual SMB shares** at runtime. The application may study official APIs and integrate appropriately licensed components internally, but the delivered user experience is one installer and one dashboard per machine.
 
+**Updated compatibility requirement (2026-10-18):** The product goal is broad compatibility across Windows versions, including mixed-version pairs. The two named PCs are only the first Phase 0 fixtures. Build version-specific native adapters and select them by runtime capability detection; do not hard-code Windows 10/11 as the full product scope. A Windows version may only be called **fully supported** after the four capabilities pass together on that version and its mixed-version combinations. Older Windows releases remain a compatibility engineering target until a concrete API/driver or legacy backend proves the same behavior. Do not silently downgrade a feature or label a partial capability as full support. See [WINDOWS_COMPATIBILITY.md](WINDOWS_COMPATIBILITY.md) for verified API floors and the validation matrix.
+
 ### 1.1 What 'simultaneously' specifically means
 
 - A paired session establishes **one persistent device relationship**.
@@ -36,6 +38,7 @@ The initial product is Windows-to-Windows and works locally without cloud infras
 - **One physical B monitor cannot simultaneously show two separate full-screen Windows desktops in the same pixels.** The design resolves this by compositing JACK's extended-desktop stream with individually surfaced System B windows in a unified workspace. There must be a clear focus/ownership rule for every visible window.
 - **Zero latency cannot be guaranteed over Wi-Fi.** The engineering goal is consistently responsive interaction, adaptive frame delivery, minimal contention, and measurable performance; the app must never claim physical zero lag.
 - Driver development, compatible Windows builds, capture permissions, secure-desktop boundaries, and signed distribution are genuine engineering requirements.
+- Windows versions expose different display, capture, input, and UI APIs. Treat OS capability as a runtime-selected backend concern; one common session and UI must coordinate the selected implementations.
 
 ---
 
@@ -58,6 +61,14 @@ Today a user must separately install and configure PowerToys Mouse Without Borde
 | Installed software | Same Unified Workspace app | Same Unified Workspace app |
 
 **Never hard-code these IP addresses into the product.** LAN discovery and pair identity must keep working when DHCP changes them. Treat these as lab fixtures, not production configuration.
+
+### 2.2 Compatibility objective
+
+- The same product and paired-session model must cover the broadest feasible range of Windows client releases, including pairs running different releases.
+- The user-facing application must probe OS build, architecture, installed capture/display APIs, driver state, and required permissions at runtime.
+- Native adapters may differ by Windows build. The shared session, security, files, input ownership, and feature coordination remain one product and do not become mutually exclusive modes.
+- If an OS lacks an API, the compatibility implementation must provide another technically valid backend for that feature or report that OS/build as not yet supported. A URL handoff, tab reopening, whole-screen mirroring, disabled display extension, or disabled input/files is not a valid substitute.
+- Compatibility coverage is a release artifact: publish the tested OS/build/architecture matrix and record pass/fail evidence for AT-01 through AT-08 for each full-support pair.
 
 ---
 
@@ -606,7 +617,7 @@ Latency, FPS and resolution depend on Wi-Fi quality, GPU encoding/decoding suppo
 - The UI must say **Live Window Handoff** / **Present Live Tab**, not imply a native app process is transferred.
 - Full native app drag between independent operating systems is never falsely claimed if portal grip/hotkey is required.
 
-**Test report must include** video/screen recording of the two-machine test (with private content redacted), build version, GPU and Wi-Fi details, p50/p95 latency, average FPS, logs, pass/fail per test, and any unsupported content types.
+**Test report must include** video/screen recording for the initial two-machine test and every claimed Windows compatibility group (with private content redacted), exact OS edition/build/architecture, build version, GPU and Wi-Fi details, p50/p95 latency, average FPS, logs, pass/fail per test, and any unsupported content types.
 
 ---
 
@@ -621,7 +632,7 @@ Before building a polished dashboard, validate the two hardest mechanisms on the
 3. Build a focus/ownership proof demonstrating JACK's extended content and B-native overlay/proxy control without disabling mouse routing.
 4. Check viability of the selected WebRTC/Windows capture/native bridge libraries and licenses.
 
-**Gate:** If real devices cannot demonstrate these, stop and report exactly what remains blocked. Do **not** quietly substitute screen mirroring, Chrome URL sync, or a mouse-only tool.
+**Gate:** If real devices cannot demonstrate a spike, keep that capability and Phase 0 acceptance **blocked**, report the exact blocker and valid technical path, and continue independent implementation, diagnostics, and compatibility work. Do not claim later phases prove the blocked feature. Do **not** substitute screen mirroring, Chrome URL sync, or a mouse-only tool.
 
 ### Phase 1 — Repository foundation and security
 
@@ -652,12 +663,12 @@ Before building a polished dashboard, validate the two hardest mechanisms on the
 
 ### Phase 5 — Full simultaneous acceptance
 
-- Run AT-01 through AT-08 on the two physical PCs.
+- Run AT-01 through AT-08 on the first two physical fixtures, then on the version/architecture matrix and representative mixed-version pairs. A Windows 10/11 pass is only the first acceptance milestone, not broad compatibility completion.
 - Benchmark QoS with transfers while video and live window portals remain active.
 - Fix focus, privacy, hardware compatibility, recovery, driver cleanup, UI polish, installer issues.
 - Package reproducible artifacts and produce a signed/release-ready plan. Do not claim fully production-ready if driver signing or compatibility testing has not actually been completed.
 
-**Completion rule:** Codex must deliver executable source, reproducible Windows builds, installers where feasible, API/docs, automated tests, and a two-machine verification report. A mocked React dashboard with nonworking buttons is not a functional delivery.
+**Completion rule:** Codex must deliver executable source, reproducible Windows builds, installers where feasible, API/docs, automated tests, and physical simultaneous acceptance reports across the declared broad Windows compatibility matrix, including mixed-version pairs. A mocked React dashboard with nonworking buttons is not a functional delivery.
 
 ---
 

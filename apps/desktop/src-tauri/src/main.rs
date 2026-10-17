@@ -4,8 +4,8 @@ use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use unified_workspace_agent::protocol::{Capability, CapabilityState, DeviceId, SessionId};
 use unified_workspace_agent::{
-    DeviceIdentity, IdentityStore, LanEndpoint, PeerBrowser, SessionCoordinator, SharedEntry,
-    SharedWorkspace,
+    DeviceIdentity, HostPlatform, IdentityStore, LanEndpoint, PeerBrowser, SessionCoordinator,
+    SharedEntry, SharedWorkspace,
 };
 
 #[derive(Default)]
@@ -111,6 +111,11 @@ fn get_local_status(state: tauri::State<'_, WorkspaceState>) -> LocalStatus {
         implementation: "local status only; pairing and remote services are not active",
         capabilities,
     }
+}
+
+#[tauri::command]
+fn get_platform_report() -> HostPlatform {
+    HostPlatform::detect()
 }
 
 fn load_or_create_identity() -> Result<DeviceIdentity, String> {
@@ -264,6 +269,7 @@ fn main() {
         .manage(NetworkState::default())
         .invoke_handler(tauri::generate_handler![
             get_local_status,
+            get_platform_report,
             start_local_network,
             discover_local_peers,
             configure_shared_workspace,
