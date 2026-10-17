@@ -3,6 +3,7 @@ node_modules/
 dist/
 build/
 out/
+artifacts/
 **/x64/
 **/ARM64/
 **/Debug/
