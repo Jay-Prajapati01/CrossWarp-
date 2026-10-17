@@ -8,8 +8,8 @@ pub mod ownership;
 pub mod protocol;
 pub mod qos;
 pub mod session;
+pub mod shared_files;
 pub mod trust;
-pub mod workspace;
 
 pub use identity_store::{IdentityStore, IdentityStoreError};
 pub use ownership::{
@@ -18,5 +18,7 @@ pub use ownership::{
 pub use protocol::{Capability, CapabilityState, DeviceId, SessionId};
 pub use qos::{EnqueueError, QosQueue, TrafficClass};
 pub use session::{SessionCoordinator, SessionError, SessionSnapshot};
+pub use shared_files::{
+    SharedEntry, SharedEntryKind, SharedFilesError, SharedWorkspace, WorkspaceUpload,
+};
 pub use trust::{DeviceIdentity, PairingApproval, PairingTranscript, SignatureProof, TrustError};
-pub use workspace::{AuthorizedRoot, WorkspaceError};
