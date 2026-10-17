@@ -1,4 +1,7 @@
-# Unified Cross-PC Workspace
+# CrossWarp
+
+*Jump between PCs without breaking flow.*
+
 ## Product Requirements, Architecture, Repository Blueprint, and Codex Implementation Specification
 
 **Document version:** 1.0  
@@ -58,7 +61,7 @@ Today a user must separately install and configure PowerToys Mouse Without Borde
 | OS | Windows 11 | Windows 10 |
 | Role | Primary workstation and display source | Secondary computer and display receiver |
 | Example LAN IP | 192.168.1.5 | 192.168.1.10 |
-| Installed software | Same Unified Workspace app | Same Unified Workspace app |
+| Installed software | Same CrossWarp app | Same CrossWarp app |
 
 **Never hard-code these IP addresses into the product.** LAN discovery and pair identity must keep working when DHCP changes them. Treat these as lab fixtures, not production configuration.
 

@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">CrossWarp</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#173B9D"/>
+      <stop offset="1" stop-color="#2D72E8"/>
+    </linearGradient>
+    <linearGradient id="warp" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8DF2D0"/>
+      <stop offset="1" stop-color="#45D4C5"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="31" fill="url(#bg)"/>
+  <rect x="22" y="26" width="55" height="43" rx="8" fill="#F7FAFF"/>
+  <path d="M37 80h25" stroke="#D4E3FF" stroke-width="7" stroke-linecap="round"/>
+  <rect x="51" y="58" width="55" height="43" rx="8" fill="#C9D9FF" stroke="#F7FAFF" stroke-width="4"/>
+  <path d="M34 46h20M76 80h17" stroke="#315FC4" stroke-width="5" stroke-linecap="round"/>
+  <path d="M43 59c5 6 11 9 19 10m17-11c-4-7-10-11-18-13" fill="none" stroke="url(#warp)" stroke-width="7" stroke-linecap="round"/>
+  <path d="m59 39 7 6-9 4m-1 14-7 6 9 3" fill="none" stroke="#8DF2D0" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

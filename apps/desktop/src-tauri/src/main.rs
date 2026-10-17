@@ -783,5 +783,5 @@ fn main() {
             create_workspace_directory
         ])
         .run(tauri::generate_context!())
-        .expect("failed to run Unified Workspace desktop shell");
+        .expect("failed to run CrossWarp desktop shell");
 }

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Unified Workspace",
+  "productName": "CrossWarp",
   "version": "0.1.0",
-  "identifier": "com.unifiedworkspace.desktop",
+  "identifier": "com.crosswarp.desktop",
   "build": {
     "beforeDevCommand": "npm run web:dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Unified Workspace",
+        "title": "CrossWarp",
         "width": 1180,
         "height": 780,
         "minWidth": 940,

@@ -1,8 +1,8 @@
 [package]
-name = "unified-workspace-desktop"
+name = "crosswarp-desktop"
 version = "0.1.0"
-description = "Unified Cross-PC Workspace desktop control panel"
-authors = ["Unified Workspace"]
+description = "CrossWarp — Jump between PCs without breaking flow"
+authors = ["CrossWarp"]
 edition = "2021"
 
 [build-dependencies]

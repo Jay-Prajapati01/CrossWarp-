@@ -255,7 +255,7 @@ export function App() {
   return (
     <main className="shell">
       <aside className="rail" aria-label="Main navigation">
-        <div className="brand-mark" aria-hidden="true">U</div>
+        <div className="brand-mark"><img src="/crosswarp-logo.svg" alt="CrossWarp" /></div>
         <nav>
           <a className="nav-link active" href="#workspace" aria-current="page" title="Workspace">⌂</a>
           <button className="nav-link" disabled aria-label="Shared files, not available yet" title="Shared files are not available yet">▤</button>
@@ -267,16 +267,16 @@ export function App() {
 
       <section className="content" id="workspace">
         <header className="topbar">
-          <div className="breadcrumb"><span>Unified Workspace</span><span className="slash">/</span><strong>Overview</strong></div>
+          <div className="breadcrumb"><span>CrossWarp</span><span className="slash">/</span><strong>Overview</strong></div>
           <div className="top-actions"><span className="status-pill"><i /> {pairingResult?.transport_active ? "Encrypted transport active" : "Disconnected"}</span><button className="icon-button" disabled aria-label="Notifications, not available yet">♧</button></div>
         </header>
 
         <div className="page">
           <div className="heading-row">
             <div>
-              <p className="eyebrow">YOUR CROSS-PC SETUP</p>
-              <h1>Workspace overview</h1>
-              <p className="lede">One session for your screens, input, files, and live windows.</p>
+              <p className="eyebrow">CROSSWARP · YOUR CROSS-PC SETUP</p>
+              <h1>Jump between PCs without breaking flow</h1>
+              <p className="lede">One connected workspace for your screens, input, files, and live windows.</p>
             </div>
             <button className="primary-button" onClick={startNetwork}>{network ? "Refresh discovery" : "Start local discovery"} <span>→</span></button>
           </div>
@@ -336,7 +336,7 @@ export function App() {
             <span className="setup-progress">{workspace ? "Local folder authorized" : "Choose storage location"}</span>
           </section>
 
-          <footer><span>Unified Workspace <b>0.1.0 · Development</b></span><span>Local network only <i className="secure-mark">⌑</i></span></footer>
+          <footer><span>CrossWarp <b>0.1.0 · Development</b></span><span>Local network only <i className="secure-mark">⌑</i></span></footer>
         </div>
       </section>
     </main>

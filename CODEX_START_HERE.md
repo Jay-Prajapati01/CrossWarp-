@@ -1,4 +1,4 @@
-# Start Here — Unified Cross-PC Workspace
+# Start Here — CrossWarp
 
 ## What this product is
 A single Windows desktop application, installed on **both** PCs, which targets broad compatibility across Windows versions and combines these **four concurrently active** capabilities. JACK/Windows 11 and DESKTOP-T13BKT8/Windows 10 are the first test fixtures, not the product ceiling:

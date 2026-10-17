@@ -1,7 +1,7 @@
-# Codex instructions — Unified Cross-PC Workspace
+# Codex instructions — CrossWarp
 
 ## Mission
-Build the Windows-first Unified Cross-PC Workspace described in `docs/PRODUCT_SPEC.md`. Read the entire product specification before modifying or generating application code. The four features are **concurrent requirements**, not mutually exclusive modes. Product scope is broad compatibility across Windows client versions and mixed-version PC pairs; JACK and DESKTOP-T13BKT8 running Windows 11/10 are initial fixtures, not the compatibility ceiling. See `docs/WINDOWS_COMPATIBILITY.md` for verified API constraints and the validation matrix.
+Build the Windows-first CrossWarp application described in `docs/PRODUCT_SPEC.md`. Read the entire product specification before modifying or generating application code. The four features are **concurrent requirements**, not mutually exclusive modes. Product scope is broad compatibility across Windows client versions and mixed-version PC pairs; JACK and DESKTOP-T13BKT8 running Windows 11/10 are initial fixtures, not the compatibility ceiling. See `docs/WINDOWS_COMPATIBILITY.md` for verified API constraints and the validation matrix.
 
 ## Required behaviors
 1. One device pairing and one application installed on each PC.
