@@ -1,6 +1,6 @@
 # Phase 0 Feasibility Plan
 
-**Status:** Planned; hardware proofs blocked in the current checkout environment. No proof is reported as passed.
+**Status:** Phase 0 gate is **NOT PASSED**. The JACK local per-window Windows.Graphics.Capture smoke subtest builds and captures a frame ([evidence](phase0-evidence/wgc-capture-smoke.md)); this is only one component of 0C. The IDD remains unsigned/unloaded, and B-origin portal, unified focus/input, and coexistence are blocked/unverified. No Phase 0 acceptance proof is reported as passed.
 
 ## Gate
 
@@ -61,4 +61,6 @@ Required before the spike build:
 ## Exit evidence
 
 Store spike source/build scripts under `spikes/phase0/`, and per-run artifacts under `docs/phase0-evidence/` (hardware inventory, steps, logs, signed package identity, telemetry, known limitations). Update [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) with only evidenced results. If a proof is blocked by missing signing, toolchain, or hardware, record the missing prerequisite and the next technically valid path; keep the gate closed.
+
+Current observed Phase 0 state is summarized in [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md); no hardware acceptance criterion has passed. Local capture source and evidence are under `native/windows-bridge/capture-smoke/` and `docs/phase0-evidence/wgc-capture-smoke.md`.
 
