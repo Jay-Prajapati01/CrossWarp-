@@ -1,16 +1,16 @@
 //! Request/response RPC for a user-granted Shared Workspace over an already
 //! authenticated, encrypted session. This layer never accepts host-absolute paths.
 
+use crate::session_transport::{ServiceReceiver, ServiceSender, SessionTransportError};
 use crate::shared_files::{
     SharedEntry, SharedFileMetadata, SharedWorkspace, WorkspaceUpload, MAX_READ_RANGE,
 };
-use crate::transport::{EncryptedReceiver, EncryptedSender, TransportError, MAX_ENCRYPTED_MESSAGE};
+use crate::transport::MAX_ENCRYPTED_MESSAGE;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
@@ -22,8 +22,8 @@ const MAX_LIST_ENTRIES: usize = 500;
 
 #[derive(Debug, Error)]
 pub enum FileRpcError {
-    #[error("encrypted transport failed: {0}")]
-    Transport(#[from] TransportError),
+    #[error("session transport failed: {0}")]
+    SessionTransport(#[from] SessionTransportError),
     #[error("file RPC message is invalid or exceeds its limit")]
     InvalidMessage,
     #[error("remote file operation failed: {0}")]
@@ -64,18 +64,14 @@ impl FileRpcClient {
 /// Starts a bidirectional RPC actor. It owns the encrypted reader and writer,
 /// correlates simultaneous requests, and serves the local grant on the same
 /// session while returning a client for calls to the peer.
-pub fn spawn_file_rpc<S, R>(
-    sender: EncryptedSender<S>,
-    receiver: EncryptedReceiver<R>,
+pub fn spawn_file_rpc(
+    sender: ServiceSender,
+    receiver: ServiceReceiver,
     workspace: Arc<std::sync::Mutex<Option<Arc<SharedWorkspace>>>>,
 ) -> (
     FileRpcClient,
     tokio::task::JoinHandle<Result<(), FileRpcError>>,
-)
-where
-    S: AsyncWrite + Unpin + Send + 'static,
-    R: AsyncRead + Unpin + Send + 'static,
-{
+) {
     let (requests, incoming) = mpsc::channel(32);
     let task = tokio::spawn(serve_file_rpc(sender, receiver, workspace, incoming));
     (FileRpcClient { requests }, task)
@@ -145,24 +141,20 @@ pub enum FileResponse {
 
 /// Serve remote workspace calls until the authenticated session closes.
 /// Ownership of the opened workspace capability stays local to the host.
-async fn serve_file_rpc<S, R>(
-    mut sender: EncryptedSender<S>,
-    mut receiver: EncryptedReceiver<R>,
+async fn serve_file_rpc(
+    sender: ServiceSender,
+    receiver: ServiceReceiver,
     workspace: Arc<std::sync::Mutex<Option<Arc<SharedWorkspace>>>>,
     mut outgoing: mpsc::Receiver<OutboundRequest>,
-) -> Result<(), FileRpcError>
-where
-    S: AsyncWrite + Unpin,
-    R: AsyncRead + Unpin,
-{
+) -> Result<(), FileRpcError> {
     let mut uploads: HashMap<Uuid, WorkspaceUpload> = HashMap::new();
     let mut pending: HashMap<u64, oneshot::Sender<Result<FileResponse, FileRpcError>>> =
         HashMap::new();
     let mut next_id = 0u64;
     loop {
         tokio::select! {
-            frame = receiver.receive() => {
-                let frame = frame?;
+            frame = receiver.recv() => {
+                let frame = frame.ok_or(SessionTransportError::Closed)?;
                 let packet: Packet = serde_json::from_slice(&frame).map_err(|_| FileRpcError::InvalidMessage)?;
                 match packet {
                     Packet::Request { id, request } => {
@@ -171,7 +163,7 @@ where
                             Some(grant) => dispatch(&grant, &mut uploads, request),
                             None => FileResponse::Error { message: "this device has not granted a Shared Workspace folder".into() },
                         };
-                        send_packet(&mut sender, &Packet::Response { id, response }).await?;
+                        send_packet(&sender, &Packet::Response { id, response }).await?;
                     }
                     Packet::Response { id, response } => {
                         if let Some(waiter) = pending.remove(&id) { let _ = waiter.send(Ok(response)); }
@@ -183,7 +175,7 @@ where
                 let id = next_id;
                 next_id = next_id.checked_add(1).ok_or(FileRpcError::InvalidMessage)?;
                 pending.insert(id, request.response);
-                if let Err(error) = send_packet(&mut sender, &Packet::Request { id, request: request.request }).await {
+                if let Err(error) = send_packet(&sender, &Packet::Request { id, request: request.request }).await {
                     if let Some(waiter) = pending.remove(&id) { let _ = waiter.send(Err(FileRpcError::SessionClosed)); }
                     return Err(error);
                 }
@@ -192,15 +184,12 @@ where
     }
 }
 
-async fn send_packet<S: AsyncWrite + Unpin>(
-    sender: &mut EncryptedSender<S>,
-    packet: &Packet,
-) -> Result<(), FileRpcError> {
+async fn send_packet(sender: &ServiceSender, packet: &Packet) -> Result<(), FileRpcError> {
     let bytes = serde_json::to_vec(packet).map_err(|_| FileRpcError::InvalidMessage)?;
     if bytes.len() > MAX_ENCRYPTED_MESSAGE {
         return Err(FileRpcError::InvalidMessage);
     }
-    sender.send(&bytes).await?;
+    sender.send(bytes).await?;
     Ok(())
 }
 
@@ -474,10 +463,18 @@ mod tests {
         );
         let (client_sender, client_receiver, _) = client.unwrap().into_encrypted();
         let (host_sender, host_receiver, _) = host.unwrap().into_encrypted();
-        let (remote, _remote_task) = spawn_file_rpc(host_sender, host_receiver, workspace.clone());
+        let (client_channels, _client_transport) =
+            crate::session_transport::spawn_session_transport(client_sender, client_receiver);
+        let (host_channels, _host_transport) =
+            crate::session_transport::spawn_session_transport(host_sender, host_receiver);
+        let (remote, _remote_task) = spawn_file_rpc(
+            host_channels.files.sender.clone(),
+            host_channels.files.receiver.clone(),
+            workspace.clone(),
+        );
         let (local, _local_task) = spawn_file_rpc(
-            client_sender,
-            client_receiver,
+            client_channels.files.sender.clone(),
+            client_channels.files.receiver.clone(),
             Arc::new(std::sync::Mutex::new(None)),
         );
         let response = local
@@ -486,10 +483,34 @@ mod tests {
             .unwrap();
         assert!(matches!(response, FileResponse::Error { .. }));
         *workspace.lock().unwrap() = Some(Arc::new(SharedWorkspace::open(&tree.0).unwrap()));
-        let response = local
-            .request(FileRequest::List { directory: None })
+        client_channels
+            .input
+            .sender
+            .send(b"input".to_vec())
             .await
             .unwrap();
+        client_channels
+            .window_video
+            .sender
+            .send(b"window-frame".to_vec())
+            .await
+            .unwrap();
+        client_channels
+            .display_video
+            .sender
+            .send(b"display-frame".to_vec())
+            .await
+            .unwrap();
+        let (response, input, window, display) = tokio::join!(
+            local.request(FileRequest::List { directory: None }),
+            host_channels.input.receiver.recv(),
+            host_channels.window_video.receiver.recv(),
+            host_channels.display_video.receiver.recv(),
+        );
+        assert_eq!(input.as_deref(), Some(&b"input"[..]));
+        assert_eq!(window.as_deref(), Some(&b"window-frame"[..]));
+        assert_eq!(display.as_deref(), Some(&b"display-frame"[..]));
+        let response = response.unwrap();
         assert!(
             matches!(response, FileResponse::Entries { entries } if entries.iter().any(|entry| entry.name == "visible.txt"))
         );

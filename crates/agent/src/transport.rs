@@ -333,12 +333,12 @@ fn derive_session_keys(
     let mut initiator_to_responder = [0u8; 32];
     let mut responder_to_initiator = [0u8; 32];
     hkdf.expand(
-        b"unified-workspace-v1 initiator to responder",
+        b"crosswarp-v2 initiator to responder",
         &mut initiator_to_responder,
     )
     .map_err(|_| TransportError::KeyDerivation)?;
     hkdf.expand(
-        b"unified-workspace-v1 responder to initiator",
+        b"crosswarp-v2 responder to initiator",
         &mut responder_to_initiator,
     )
     .map_err(|_| TransportError::KeyDerivation)?;
@@ -670,6 +670,19 @@ mod tests {
         );
         assert!(matches!(left, Err(TransportError::IdentityMismatch)));
         assert!(matches!(right, Err(TransportError::IdentityMismatch)));
+    }
+
+    #[test]
+    fn incompatible_wire_protocol_is_rejected_during_handshake_validation() {
+        let initiator_identity = DeviceIdentity::generate();
+        let responder_identity = DeviceIdentity::generate();
+        let (local, _) = make_hello(&initiator_identity, HandshakeRole::Initiator);
+        let (mut peer, _) = make_hello(&responder_identity, HandshakeRole::Responder);
+        peer.protocol_version = PROTOCOL_VERSION - 1;
+        assert!(matches!(
+            validate_hello(&local, &peer),
+            Err(TransportError::ProtocolVersionMismatch)
+        ));
     }
 
     #[tokio::test]

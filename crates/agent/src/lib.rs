@@ -12,6 +12,7 @@ pub mod platform;
 pub mod protocol;
 pub mod qos;
 pub mod session;
+pub mod session_transport;
 pub mod shared_files;
 pub mod transport;
 pub mod trust;
@@ -32,6 +33,10 @@ pub use platform::{HostPlatform, WindowsVersion};
 pub use protocol::{Capability, CapabilityState, DeviceId, SessionId};
 pub use qos::{EnqueueError, QosQueue, TrafficClass};
 pub use session::{SessionCoordinator, SessionError, SessionSnapshot};
+pub use session_transport::{
+    spawn_session_transport, ServicePipe, ServiceReceiver, ServiceSender, SessionChannels,
+    SessionTransportError,
+};
 pub use shared_files::{
     SharedEntry, SharedEntryKind, SharedFilesError, SharedWorkspace, WorkspaceUpload,
 };

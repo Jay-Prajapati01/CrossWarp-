@@ -7,10 +7,10 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 use unified_workspace_agent::protocol::{Capability, CapabilityState, DeviceId, SessionId};
 use unified_workspace_agent::{
-    pair_over_stream, spawn_file_rpc, DeviceIdentity, FileRequest, FileResponse, FileRpcClient,
-    HandshakeRole, HostPlatform, IdentityStore, LanEndpoint, PairingApproval, PeerBrowser,
-    SessionCoordinator, SharedEntry, SharedWorkspace, TrustedPeerStore, MAX_RPC_READ_CHUNK,
-    MAX_RPC_UPLOAD_CHUNK,
+    pair_over_stream, spawn_file_rpc, spawn_session_transport, DeviceIdentity, FileRequest,
+    FileResponse, FileRpcClient, HandshakeRole, HostPlatform, IdentityStore, LanEndpoint,
+    PairingApproval, PeerBrowser, SessionChannels, SessionCoordinator, SharedEntry,
+    SharedWorkspace, TrustedPeerStore, MAX_RPC_READ_CHUNK, MAX_RPC_UPLOAD_CHUNK,
 };
 
 #[derive(Clone, Default)]
@@ -35,7 +35,18 @@ struct PairingInner {
     trusted: Mutex<Vec<String>>,
     active: Mutex<HashSet<String>>,
     clients: Mutex<HashMap<String, FileRpcClient>>,
+    services: Mutex<HashMap<String, SessionChannels>>,
     session_tasks: Mutex<HashMap<String, tokio::task::AbortHandle>>,
+}
+
+struct AbortChildrenOnDrop(Vec<tokio::task::AbortHandle>);
+
+impl Drop for AbortChildrenOnDrop {
+    fn drop(&mut self) {
+        for child in &self.0 {
+            child.abort();
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -442,12 +453,32 @@ async fn run_pairing(
     let peer_for_task = result.peer_device_id.clone();
     let session_pairing = pairing.clone();
     let session_app = completion_app.clone();
-    let (client, task) = spawn_file_rpc(sender, receiver, workspace);
+    let (services, transport_task) = spawn_session_transport(sender, receiver);
+    let (client, mut file_task) = spawn_file_rpc(
+        services.files.sender.clone(),
+        services.files.receiver.clone(),
+        workspace,
+    );
+    let mut transport_task = transport_task;
+    let abort_children = AbortChildrenOnDrop(vec![
+        file_task.abort_handle(),
+        transport_task.abort_handle(),
+    ]);
+    let task = tokio::spawn(async move {
+        let _abort_children = abort_children;
+        tokio::select! {
+            _ = &mut file_task => {},
+            _ = &mut transport_task => {},
+        }
+    });
     if let Ok(mut tasks) = pairing.session_tasks.lock() {
         tasks.insert(peer_for_task.clone(), task.abort_handle());
     }
     if let Ok(mut clients) = pairing.clients.lock() {
         clients.insert(peer_for_task.clone(), client);
+    }
+    if let Ok(mut services_by_peer) = pairing.services.lock() {
+        services_by_peer.insert(peer_for_task.clone(), services);
     }
     tokio::spawn(async move {
         let _ = task.await;
@@ -456,6 +487,9 @@ async fn run_pairing(
         }
         if let Ok(mut clients) = session_pairing.clients.lock() {
             clients.remove(&peer_for_task);
+        }
+        if let Ok(mut services_by_peer) = session_pairing.services.lock() {
+            services_by_peer.remove(&peer_for_task);
         }
         if let Ok(mut tasks) = session_pairing.session_tasks.lock() {
             tasks.remove(&peer_for_task);
