@@ -7,6 +7,7 @@ pub mod file_rpc;
 pub mod identity_store;
 pub mod input_session;
 pub mod lan;
+pub mod media_session;
 pub mod ownership;
 pub mod peer_store;
 pub mod platform;
@@ -30,6 +31,10 @@ pub use input_session::{
     MAX_INPUT_FRAME_BYTES,
 };
 pub use lan::{DiscoveredPeer, LanEndpoint, LanError, PeerBrowser};
+pub use media_session::{
+    send_media_frame, MediaFrame, MediaLane, MediaSessionError, MediaSessionReceiver, VideoCodec,
+    MAX_MEDIA_PAYLOAD_BYTES,
+};
 pub use ownership::{
     InputOwner, InputRouter, Rect, ReleasedInput, Surface, SurfaceKind, SurfaceMap,
 };

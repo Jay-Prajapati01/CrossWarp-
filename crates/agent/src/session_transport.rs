@@ -87,6 +87,14 @@ impl ServiceSender {
         self.kind == ServiceKind::Input
     }
 
+    pub(crate) fn is_window_video_lane(&self) -> bool {
+        self.kind == ServiceKind::WindowVideo
+    }
+
+    pub(crate) fn is_display_video_lane(&self) -> bool {
+        self.kind == ServiceKind::DisplayVideo
+    }
+
     /// Losslessly enqueue a payload, applying bounded backpressure.
     pub async fn send(&self, payload: Vec<u8>) -> Result<(), SessionTransportError> {
         validate_payload(self.kind, &payload)?;
