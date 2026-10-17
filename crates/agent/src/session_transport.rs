@@ -83,6 +83,10 @@ pub struct ServiceSender {
 }
 
 impl ServiceSender {
+    pub(crate) fn is_input_lane(&self) -> bool {
+        self.kind == ServiceKind::Input
+    }
+
     /// Losslessly enqueue a payload, applying bounded backpressure.
     pub async fn send(&self, payload: Vec<u8>) -> Result<(), SessionTransportError> {
         validate_payload(self.kind, &payload)?;

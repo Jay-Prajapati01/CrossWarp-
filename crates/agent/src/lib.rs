@@ -5,6 +5,7 @@
 
 pub mod file_rpc;
 pub mod identity_store;
+pub mod input_session;
 pub mod lan;
 pub mod ownership;
 pub mod peer_store;
@@ -24,6 +25,10 @@ pub use file_rpc::{
     MAX_RPC_UPLOAD_CHUNK,
 };
 pub use identity_store::{IdentityStore, IdentityStoreError};
+pub use input_session::{
+    route_local_input, InputSessionError, InputSessionReceiver, InputSessionSender, RoutedInput,
+    MAX_INPUT_FRAME_BYTES,
+};
 pub use lan::{DiscoveredPeer, LanEndpoint, LanError, PeerBrowser};
 pub use ownership::{
     InputOwner, InputRouter, Rect, ReleasedInput, Surface, SurfaceKind, SurfaceMap,
