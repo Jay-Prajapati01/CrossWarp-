@@ -59,6 +59,14 @@ struct PairingResult {
     detail: String,
 }
 
+#[derive(Clone, Serialize)]
+struct RemoteUploadProgress {
+    peer_device_id: String,
+    bytes_sent: u64,
+    total_bytes: u64,
+    complete: bool,
+}
+
 static NEXT_PAIRING_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 #[derive(Serialize)]
@@ -499,12 +507,15 @@ async fn read_remote_file_range(
 
 #[tauri::command]
 async fn upload_remote_file(
+    app: tauri::AppHandle,
     peer_device_id: String,
     destination_path: String,
     source_path: String,
     replace_existing: bool,
     pairing: tauri::State<'_, PairingState>,
 ) -> Result<(), String> {
+    use tauri::Emitter;
+
     let client = remote_file_client(&pairing, &peer_device_id)?;
     let metadata = tokio::fs::metadata(&source_path)
         .await
@@ -512,6 +523,14 @@ async fn upload_remote_file(
     if !metadata.is_file() {
         return Err("selected upload source is not a regular file".into());
     }
+    let total_bytes = metadata.len();
+    let emit_progress = |bytes_sent, complete| {
+        let _ = app.emit(
+            "remote-upload-progress",
+            RemoteUploadProgress { peer_device_id: peer_device_id.clone(), bytes_sent, total_bytes, complete },
+        );
+    };
+    emit_progress(0, false);
     let transfer = match client
         .request(FileRequest::BeginUpload {
             path: destination_path,
@@ -551,6 +570,7 @@ async fn upload_remote_file(
             {
                 FileResponse::Progress { written } if written == offset + read as u64 => {
                     offset = written;
+                    emit_progress(offset, false);
                 }
                 FileResponse::Error { message } => return Err(message),
                 _ => return Err("peer returned an unexpected upload progress response".into()),
@@ -571,7 +591,10 @@ async fn upload_remote_file(
             .await
             .map_err(|error| error.to_string())?
         {
-            FileResponse::Digest { sha256 } if sha256 == digest => Ok(()),
+            FileResponse::Digest { sha256 } if sha256 == digest => {
+                emit_progress(total_bytes, true);
+                Ok(())
+            }
             FileResponse::Error { message } => Err(message),
             _ => Err("peer returned an unexpected upload completion response".into()),
         }
