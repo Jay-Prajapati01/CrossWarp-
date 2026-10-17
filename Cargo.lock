@@ -450,6 +450,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

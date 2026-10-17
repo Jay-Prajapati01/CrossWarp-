@@ -151,10 +151,12 @@ impl DeviceIdentity {
         }
     }
 
-    pub fn from_secret_bytes(secret: [u8; 32]) -> Self {
-        Self {
+    pub fn from_secret_bytes(mut secret: [u8; 32]) -> Self {
+        let identity = Self {
             signing_key: SigningKey::from_bytes(&secret),
-        }
+        };
+        zeroize::Zeroize::zeroize(&mut secret);
+        identity
     }
 
     pub fn device_id(&self) -> DeviceId {
@@ -163,6 +165,11 @@ impl DeviceIdentity {
 
     pub fn public_key(&self) -> [u8; 32] {
         self.signing_key.verifying_key().to_bytes()
+    }
+
+    /// Export the secret only for the platform-protected identity store.
+    pub(crate) fn secret_bytes(&self) -> [u8; 32] {
+        self.signing_key.to_bytes()
     }
 
     pub fn prove(&self, transcript: &PairingTranscript) -> SignatureProof {

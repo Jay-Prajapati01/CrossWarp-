@@ -3,6 +3,7 @@
 //! This crate deliberately models each capability independently: starting a
 //! display stream must never implicitly stop input, files, or window portals.
 
+pub mod identity_store;
 pub mod ownership;
 pub mod protocol;
 pub mod qos;
@@ -10,6 +11,7 @@ pub mod session;
 pub mod trust;
 pub mod workspace;
 
+pub use identity_store::{IdentityStore, IdentityStoreError};
 pub use ownership::{
     InputOwner, InputRouter, Rect, ReleasedInput, Surface, SurfaceKind, SurfaceMap,
 };
