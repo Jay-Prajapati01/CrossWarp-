@@ -17,6 +17,8 @@ type LocalStatus = {
 
 type WorkspaceEntry = { name: string; relative_path: string; kind: "file" | "directory"; size: number };
 type WorkspaceView = { root: string; entries: WorkspaceEntry[] };
+type NetworkStatus = { device_id: string; listen_address: string; discovery: string };
+type Peer = { device_id: string; addresses: string[] };
 
 const labels: Record<string, { title: string; glyph: string }> = {
   input: { title: "Shared input", glyph: "↔" },
@@ -30,6 +32,8 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceView | null>(null);
   const [directory, setDirectory] = useState<string | null>(null);
+  const [network, setNetwork] = useState<NetworkStatus | null>(null);
+  const [peers, setPeers] = useState<Peer[]>([]);
 
   useEffect(() => {
     invoke<LocalStatus>("get_local_status")
@@ -44,6 +48,7 @@ export function App() {
       const result = await invoke<WorkspaceView>("configure_shared_workspace", { path });
       setWorkspace(result);
       setDirectory(null);
+      setStatus(await invoke<LocalStatus>("get_local_status"));
       setError(null);
     } catch (reason) { setError(String(reason)); }
   }
@@ -64,6 +69,18 @@ export function App() {
     try {
       await invoke("create_workspace_directory", { path });
       await openDirectory(directory);
+    } catch (reason) { setError(String(reason)); }
+  }
+
+  async function startNetwork() {
+    try {
+      setNetwork(await invoke<NetworkStatus>("start_local_network"));
+      setError(null);
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+        const found = await invoke<Peer[]>("discover_local_peers");
+        if (found.length) setPeers((current) => [...new Map([...current, ...found].map((peer) => [peer.device_id, peer])).values()]);
+      }
     } catch (reason) { setError(String(reason)); }
   }
 
@@ -93,7 +110,7 @@ export function App() {
               <h1>Workspace overview</h1>
               <p className="lede">One session for your screens, input, files, and live windows.</p>
             </div>
-            <button className="primary-button" disabled title="Pairing transport is not implemented yet">Connect workspace <span>→</span></button>
+            <button className="primary-button" onClick={startNetwork}>{network ? "Refresh discovery" : "Start local discovery"} <span>→</span></button>
           </div>
 
           <section className="device-card" aria-label="Device connection">
@@ -105,8 +122,10 @@ export function App() {
             </div>
             <div className="connection-state"><span className="state-dot" /> Not paired</div>
             <div className="device-divider" />
-            <div className="peer-placeholder"><span className="add-peer">＋</span><span><strong>Peer discovery unavailable</strong><small>Discovery and pairing are not implemented yet</small></span></div>
+            <div className="peer-placeholder"><span className="add-peer">＋</span><span><strong>{peers.length ? `${peers.length} peer${peers.length === 1 ? "" : "s"} discovered` : network ? "Listening for peers" : "No peer session"}</strong><small>{network ? `${network.discovery} · ${network.listen_address}` : "Start local discovery to advertise this device and find others."}</small></span></div>
           </section>
+
+          {network && <section className="setup-panel"><div className="setup-symbol">⌁</div><div className="workspace-content"><strong>Device identity and LAN transport</strong><p>Identity is saved with Windows DPAPI. Discovery advertisements are hints only; authenticated pairing and remote capabilities are not connected to this UI yet.</p><div className="workspace-root">Device fingerprint · {network.device_id}</div>{peers.map((peer) => <div className="workspace-root" key={peer.device_id}>Untrusted discovered peer · {peer.device_id} · {peer.addresses.join(", ")}</div>)}</div></section>}
 
           <div className="section-heading"><div><h2>Connected capabilities</h2><p>Each service will report its own live state.</p></div><span className="all-state">0 of 4 available</span></div>
           <section className="capability-grid" aria-label="Capability status">

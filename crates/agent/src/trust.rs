@@ -1,16 +1,19 @@
 use crate::protocol::{DeviceId, PROTOCOL_VERSION};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand_core::{OsRng, RngCore};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-/// Public transcript bound to both identities and fresh nonces before trust is persisted.
+/// Public transcript bound to both identities, fresh nonces, and ephemeral keys.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PairingTranscript {
     pub initiator: DeviceId,
     pub responder: DeviceId,
     pub initiator_nonce: [u8; 32],
     pub responder_nonce: [u8; 32],
+    pub initiator_ephemeral: [u8; 32],
+    pub responder_ephemeral: [u8; 32],
     pub displayed_code: String,
 }
 
@@ -18,13 +21,40 @@ impl PairingTranscript {
     pub fn create(initiator: DeviceId, responder: DeviceId) -> Self {
         let mut initiator_nonce = [0u8; 32];
         let mut responder_nonce = [0u8; 32];
+        let mut initiator_ephemeral = [0u8; 32];
+        let mut responder_ephemeral = [0u8; 32];
         OsRng.fill_bytes(&mut initiator_nonce);
         OsRng.fill_bytes(&mut responder_nonce);
+        OsRng.fill_bytes(&mut initiator_ephemeral);
+        OsRng.fill_bytes(&mut responder_ephemeral);
         let mut transcript = Self {
             initiator,
             responder,
             initiator_nonce,
             responder_nonce,
+            initiator_ephemeral,
+            responder_ephemeral,
+            displayed_code: String::new(),
+        };
+        transcript.displayed_code = transcript.derive_display_code();
+        transcript
+    }
+
+    pub fn from_exchange(
+        initiator: DeviceId,
+        responder: DeviceId,
+        initiator_nonce: [u8; 32],
+        responder_nonce: [u8; 32],
+        initiator_ephemeral: [u8; 32],
+        responder_ephemeral: [u8; 32],
+    ) -> Self {
+        let mut transcript = Self {
+            initiator,
+            responder,
+            initiator_nonce,
+            responder_nonce,
+            initiator_ephemeral,
+            responder_ephemeral,
             displayed_code: String::new(),
         };
         transcript.displayed_code = transcript.derive_display_code();
@@ -38,6 +68,8 @@ impl PairingTranscript {
         append_field(&mut bytes, self.responder.0.as_bytes());
         bytes.extend_from_slice(&self.initiator_nonce);
         bytes.extend_from_slice(&self.responder_nonce);
+        bytes.extend_from_slice(&self.initiator_ephemeral);
+        bytes.extend_from_slice(&self.responder_ephemeral);
         let digest = Sha256::digest(bytes);
         let number =
             u32::from_be_bytes(digest[..4].try_into().expect("fixed digest length")) % 1_000_000;
@@ -57,6 +89,8 @@ impl PairingTranscript {
         bytes.extend_from_slice(&self.initiator_nonce);
         bytes.extend_from_slice(&self.responder_nonce);
         append_field(&mut bytes, self.displayed_code.as_bytes());
+        bytes.extend_from_slice(&self.initiator_ephemeral);
+        bytes.extend_from_slice(&self.responder_ephemeral);
         bytes
     }
 }
@@ -66,7 +100,7 @@ fn append_field(target: &mut Vec<u8>, field: &[u8]) {
     target.extend_from_slice(field);
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SignatureProof {
     pub device_id: DeviceId,
     pub public_key: [u8; 32],
@@ -179,20 +213,28 @@ impl DeviceIdentity {
     }
 
     pub fn prove(&self, transcript: &PairingTranscript) -> SignatureProof {
+        self.prove_bytes(transcript.signing_bytes())
+    }
+
+    pub(crate) fn prove_bytes(&self, message: Vec<u8>) -> SignatureProof {
         SignatureProof {
             device_id: self.device_id(),
             public_key: self.public_key(),
-            signature: self
-                .signing_key
-                .sign(&transcript.signing_bytes())
-                .to_bytes()
-                .to_vec(),
+            signature: self.signing_key.sign(&message).to_bytes().to_vec(),
         }
     }
 
     pub fn verify(
         expected_device: &DeviceId,
         transcript: &PairingTranscript,
+        proof: &SignatureProof,
+    ) -> Result<(), TrustError> {
+        Self::verify_bytes(expected_device, &transcript.signing_bytes(), proof)
+    }
+
+    pub(crate) fn verify_bytes(
+        expected_device: &DeviceId,
+        message: &[u8],
         proof: &SignatureProof,
     ) -> Result<(), TrustError> {
         if &proof.device_id != expected_device
@@ -204,7 +246,7 @@ impl DeviceIdentity {
             .map_err(|_| TrustError::InvalidPublicKey)?;
         let signature =
             Signature::from_slice(&proof.signature).map_err(|_| TrustError::InvalidSignature)?;
-        key.verify_strict(&transcript.signing_bytes(), &signature)
+        key.verify_strict(message, &signature)
             .map_err(|_| TrustError::InvalidSignature)
     }
 }
@@ -219,6 +261,8 @@ mod tests {
             responder: responder.device_id(),
             initiator_nonce: [7; 32],
             responder_nonce: [9; 32],
+            initiator_ephemeral: [11; 32],
+            responder_ephemeral: [13; 32],
             displayed_code: "482193".into(),
         }
     }
@@ -262,6 +306,9 @@ mod tests {
         let mut changed_nonce = original.clone();
         changed_nonce.initiator_nonce[0] ^= 1;
         assert_ne!(original.signing_bytes(), changed_nonce.signing_bytes());
+        let mut changed_ephemeral = original.clone();
+        changed_ephemeral.responder_ephemeral[0] ^= 1;
+        assert_ne!(original.signing_bytes(), changed_ephemeral.signing_bytes());
     }
 
     #[test]
