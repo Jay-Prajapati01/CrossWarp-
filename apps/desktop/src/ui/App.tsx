@@ -170,9 +170,16 @@ export function App() {
     if (!sourcePath || Array.isArray(sourcePath)) return;
     const fileName = sourcePath.split(/[\\/]/).at(-1);
     if (!fileName) return;
+    const existing = remoteEntries?.find((entry) => entry.name === fileName);
+    if (existing?.kind === "directory") {
+      setError(`A folder named ${fileName} already exists in the peer workspace.`);
+      return;
+    }
+    const replaceExisting = existing?.kind === "file";
+    if (replaceExisting && !window.confirm(`Replace the existing peer file ${fileName}? The new file will appear only after its upload and SHA-256 check succeed.`)) return;
     const destinationPath = [remoteDirectory, fileName].filter(Boolean).join("/");
     try {
-      await invoke("upload_remote_file", { peerDeviceId: pairingResult.peer_device_id, destinationPath, sourcePath });
+      await invoke("upload_remote_file", { peerDeviceId: pairingResult.peer_device_id, destinationPath, sourcePath, replaceExisting });
       await refreshRemoteDirectory(remoteDirectory);
       setError(null);
     } catch (reason) { setError(String(reason)); }

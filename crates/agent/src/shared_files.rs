@@ -287,7 +287,7 @@ impl WorkspaceUpload {
         Ok(())
     }
 
-    pub fn commit(mut self, expected_sha256: [u8; 32]) -> Result<[u8; 32], SharedFilesError> {
+    fn prepare_commit(&mut self, expected_sha256: [u8; 32]) -> Result<[u8; 32], SharedFilesError> {
         if self.written != self.declared_length {
             return Err(SharedFilesError::UploadLengthMismatch);
         }
@@ -301,6 +301,11 @@ impl WorkspaceUpload {
             .ok_or(SharedFilesError::InvalidUploadChunk)?;
         file.sync_all()?;
         drop(file);
+        Ok(actual)
+    }
+
+    pub fn commit(mut self, expected_sha256: [u8; 32]) -> Result<[u8; 32], SharedFilesError> {
+        let actual = self.prepare_commit(expected_sha256)?;
 
         // Hard-link creation is atomic and fails if the destination already exists.
         self.parent
@@ -308,6 +313,32 @@ impl WorkspaceUpload {
             .map_err(map_already_exists)?;
         self.committed = true;
         let _ = self.parent.remove_file(&self.temp_name);
+        Ok(actual)
+    }
+
+    /// Atomically replace an existing regular file after explicit user
+    /// confirmation and full length/checksum validation. Directory handles keep
+    /// both names rooted in the original grant; a symlink is never followed.
+    pub fn commit_replace(
+        mut self,
+        expected_sha256: [u8; 32],
+        user_confirmed: bool,
+    ) -> Result<[u8; 32], SharedFilesError> {
+        if !user_confirmed {
+            return Err(SharedFilesError::ConfirmationRequired);
+        }
+        let metadata = self
+            .parent
+            .symlink_metadata(&self.destination_name)
+            .map_err(map_not_found)?;
+        if !metadata.is_file() {
+            return Err(SharedFilesError::WrongEntryType);
+        }
+        let actual = self.prepare_commit(expected_sha256)?;
+        self.parent
+            .rename(&self.temp_name, &self.parent, &self.destination_name)
+            .map_err(map_already_exists)?;
+        self.committed = true;
         Ok(actual)
     }
 }
@@ -441,6 +472,42 @@ mod tests {
             Err(SharedFilesError::AlreadyExists)
         ));
         assert_eq!(fs::read(tree.0.join("report.txt")).unwrap(), b"original");
+    }
+
+    #[test]
+    fn atomic_replace_requires_confirmation_and_valid_checksum() {
+        let tree = TempTree::new();
+        fs::write(tree.0.join("report.txt"), b"original").unwrap();
+        let service = workspace(&tree);
+        let replacement = b"edited and saved";
+        let digest: [u8; 32] = Sha256::digest(replacement).into();
+
+        let mut unconfirmed = service
+            .begin_upload("report.txt", replacement.len() as u64)
+            .unwrap();
+        unconfirmed.write_chunk(0, replacement).unwrap();
+        assert!(matches!(
+            unconfirmed.commit_replace(digest, false),
+            Err(SharedFilesError::ConfirmationRequired)
+        ));
+        assert_eq!(fs::read(tree.0.join("report.txt")).unwrap(), b"original");
+
+        let mut bad_checksum = service
+            .begin_upload("report.txt", replacement.len() as u64)
+            .unwrap();
+        bad_checksum.write_chunk(0, replacement).unwrap();
+        assert!(matches!(
+            bad_checksum.commit_replace([0; 32], true),
+            Err(SharedFilesError::ChecksumMismatch)
+        ));
+        assert_eq!(fs::read(tree.0.join("report.txt")).unwrap(), b"original");
+
+        let mut upload = service
+            .begin_upload("report.txt", replacement.len() as u64)
+            .unwrap();
+        upload.write_chunk(0, replacement).unwrap();
+        assert_eq!(upload.commit_replace(digest, true).unwrap(), digest);
+        assert_eq!(fs::read(tree.0.join("report.txt")).unwrap(), replacement);
     }
 
     #[test]

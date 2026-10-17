@@ -106,6 +106,11 @@ pub enum FileRequest {
         transfer: Uuid,
         sha256: [u8; 32],
     },
+    CommitUploadReplace {
+        transfer: Uuid,
+        sha256: [u8; 32],
+        confirmed: bool,
+    },
     AbortUpload {
         transfer: Uuid,
     },
@@ -254,6 +259,20 @@ fn dispatch(
         FileRequest::CommitUpload { transfer, sha256 } => match uploads.remove(&transfer) {
             Some(upload) => upload
                 .commit(sha256)
+                .map(|digest| FileResponse::Digest { sha256: digest }),
+            None => {
+                return FileResponse::Error {
+                    message: "upload transfer was not found".into(),
+                }
+            }
+        },
+        FileRequest::CommitUploadReplace {
+            transfer,
+            sha256,
+            confirmed,
+        } => match uploads.remove(&transfer) {
+            Some(upload) => upload
+                .commit_replace(sha256, confirmed)
                 .map(|digest| FileResponse::Digest { sha256: digest }),
             None => {
                 return FileResponse::Error {
@@ -474,5 +493,36 @@ mod tests {
             FileResponse::Entries { .. }
         ));
         assert!(matches!(host_result.unwrap(), FileResponse::Error { .. }));
+        let replacement = b"remote edit saved";
+        let transfer = match local
+            .request(FileRequest::BeginUpload {
+                path: "visible.txt".into(),
+                length: replacement.len() as u64,
+            })
+            .await
+            .unwrap()
+        {
+            FileResponse::Transfer { transfer } => transfer,
+            other => panic!("unexpected begin upload response: {other:?}"),
+        };
+        assert!(matches!(
+            local.request(FileRequest::UploadChunk { transfer, offset: 0, bytes: replacement.to_vec() }).await.unwrap(),
+            FileResponse::Progress { written } if written == replacement.len() as u64
+        ));
+        assert!(matches!(
+            local
+                .request(FileRequest::CommitUploadReplace {
+                    transfer,
+                    sha256: sha256(replacement),
+                    confirmed: true
+                })
+                .await
+                .unwrap(),
+            FileResponse::Digest { .. }
+        ));
+        assert!(matches!(
+            local.request(FileRequest::ReadRange { path: "visible.txt".into(), offset: 0, length: replacement.len() }).await.unwrap(),
+            FileResponse::Bytes { bytes } if bytes == replacement
+        ));
     }
 }

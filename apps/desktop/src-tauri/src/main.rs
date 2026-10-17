@@ -502,6 +502,7 @@ async fn upload_remote_file(
     peer_device_id: String,
     destination_path: String,
     source_path: String,
+    replace_existing: bool,
     pairing: tauri::State<'_, PairingState>,
 ) -> Result<(), String> {
     let client = remote_file_client(&pairing, &peer_device_id)?;
@@ -556,8 +557,17 @@ async fn upload_remote_file(
             }
         }
         let digest: [u8; 32] = hasher.finalize().into();
+        let commit = if replace_existing {
+            FileRequest::CommitUploadReplace {
+                transfer,
+                sha256: digest,
+                confirmed: true,
+            }
+        } else {
+            FileRequest::CommitUpload { transfer, sha256: digest }
+        };
         match client
-            .request(FileRequest::CommitUpload { transfer, sha256: digest })
+            .request(commit)
             .await
             .map_err(|error| error.to_string())?
         {
