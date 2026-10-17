@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 
 type Capability = {
   capability: string;
@@ -14,6 +15,9 @@ type LocalStatus = {
   capabilities: Capability[];
 };
 
+type WorkspaceEntry = { name: string; relative_path: string; kind: "file" | "directory"; size: number };
+type WorkspaceView = { root: string; entries: WorkspaceEntry[] };
+
 const labels: Record<string, { title: string; glyph: string }> = {
   input: { title: "Shared input", glyph: "↔" },
   shared_files: { title: "Shared Workspace", glyph: "▤" },
@@ -24,12 +28,44 @@ const labels: Record<string, { title: string; glyph: string }> = {
 export function App() {
   const [status, setStatus] = useState<LocalStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [workspace, setWorkspace] = useState<WorkspaceView | null>(null);
+  const [directory, setDirectory] = useState<string | null>(null);
 
   useEffect(() => {
     invoke<LocalStatus>("get_local_status")
       .then(setStatus)
       .catch((reason: unknown) => setError(String(reason)));
   }, []);
+
+  async function chooseWorkspace() {
+    const path = await open({ directory: true, multiple: false, title: "Choose a folder for this device's Shared Workspace" });
+    if (!path || Array.isArray(path)) return;
+    try {
+      const result = await invoke<WorkspaceView>("configure_shared_workspace", { path });
+      setWorkspace(result);
+      setDirectory(null);
+      setError(null);
+    } catch (reason) { setError(String(reason)); }
+  }
+
+  async function openDirectory(path: string | null) {
+    try {
+      const entries = await invoke<WorkspaceEntry[]>("list_workspace_directory", { path });
+      setWorkspace((current) => current ? { ...current, entries } : current);
+      setDirectory(path);
+      setError(null);
+    } catch (reason) { setError(String(reason)); }
+  }
+
+  async function createFolder() {
+    const name = window.prompt("New folder name");
+    if (!name) return;
+    const path = [directory, name].filter(Boolean).join("/");
+    try {
+      await invoke("create_workspace_directory", { path });
+      await openDirectory(directory);
+    } catch (reason) { setError(String(reason)); }
+  }
 
   return (
     <main className="shell">
@@ -89,10 +125,17 @@ export function App() {
 
           {error && <div className="error-banner" role="alert">Local status could not be loaded: {error}</div>}
 
-          <section className="setup-panel">
+          <section className="setup-panel workspace-panel">
             <div className="setup-symbol">✦</div>
-            <div><strong>Set up your paired workspace</strong><p>The dashboard is a local shell right now. Pairing, file access, display streaming, and live portals are still being implemented.</p></div>
-            <span className="setup-progress">Foundation in progress</span>
+            <div className="workspace-content"><strong>Shared Workspace</strong><p>This device's selected folder. Remote access requires a paired connection and is not active yet.</p>
+              <div className="workspace-actions"><button onClick={chooseWorkspace}>{workspace ? "Change authorized folder" : "Choose a folder"}</button>{workspace && <button onClick={createFolder}>New folder</button>}</div>
+              {workspace && <><div className="workspace-root">Local only · {workspace.root}</div><div className="file-list">
+                {directory && <button className="file-row folder-row" onClick={() => openDirectory(directory.includes("/") ? directory.slice(0, directory.lastIndexOf("/")) : null)}>↰ <span>Parent folder</span></button>}
+                {workspace.entries.map((entry) => <button className="file-row" key={entry.relative_path} disabled={entry.kind !== "directory"} onClick={() => openDirectory(entry.relative_path)}><span>{entry.kind === "directory" ? "▰" : "▤"} {entry.name}</span><small>{entry.kind === "directory" ? "Folder" : `${entry.size.toLocaleString()} bytes`}</small></button>)}
+                {workspace.entries.length === 0 && <span className="empty-files">This folder is empty.</span>}
+              </div></>}
+            </div>
+            <span className="setup-progress">{workspace ? "Local folder authorized" : "Choose storage location"}</span>
           </section>
 
           <footer><span>Unified Workspace <b>0.1.0 · Development</b></span><span>Local network only <i className="secure-mark">⌑</i></span></footer>
