@@ -612,6 +612,7 @@ async fn download_remote_file_to_path(
     };
     emit_progress(0, false);
     let result = async {
+        let mut download_hasher = sha2::Sha256::new();
         let mut offset = 0u64;
         while offset < expected_size {
             let length = (expected_size - offset).min(MAX_RPC_READ_CHUNK as u64) as usize;
@@ -637,6 +638,7 @@ async fn download_remote_file_to_path(
                 .write_all(&bytes)
                 .await
                 .map_err(|error| error.to_string())?;
+            download_hasher.update(&bytes);
             offset += bytes.len() as u64;
             emit_progress(offset, false);
         }
@@ -654,7 +656,14 @@ async fn download_remote_file_to_path(
         }
         output.sync_all().await.map_err(|error| error.to_string())?;
         drop(output);
-        commit_download_file(&temporary, &destination).await?;
+        let downloaded_digest: [u8; 32] = download_hasher.finalize().into();
+        commit_download_file(
+            &temporary,
+            &destination,
+            downloaded_digest,
+            starting_metadata.sha256,
+        )
+        .await?;
         emit_progress(expected_size, true);
         Ok(())
     }
@@ -668,7 +677,12 @@ async fn download_remote_file_to_path(
 async fn commit_download_file(
     temporary: &std::path::Path,
     destination: &std::path::Path,
+    downloaded_digest: [u8; 32],
+    expected_digest: [u8; 32],
 ) -> Result<(), String> {
+    if downloaded_digest != expected_digest {
+        return Err("downloaded bytes do not match the peer file SHA-256".into());
+    }
     tokio::fs::rename(temporary, destination)
         .await
         .map_err(|error| error.to_string())
@@ -941,7 +955,13 @@ mod tests {
             .await
             .unwrap();
 
-        commit_download_file(&temporary, &destination)
+        let downloaded_digest: [u8; 32] = sha2::Sha256::digest(b"complete replacement").into();
+        commit_download_file(
+            &temporary,
+            &destination,
+            downloaded_digest,
+            downloaded_digest,
+        )
             .await
             .unwrap();
 
@@ -950,6 +970,29 @@ mod tests {
             b"complete replacement"
         );
         assert!(!temporary.exists());
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn corrupt_download_does_not_replace_the_selected_file() {
+        let root = std::env::temp_dir().join(format!(
+            "crosswarp-download-corrupt-{}-{}",
+            std::process::id(),
+            NEXT_DOWNLOAD_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        tokio::fs::create_dir(&root).await.unwrap();
+        let destination = root.join("report.txt");
+        let temporary = root.join(".crosswarp-transfer.part");
+        tokio::fs::write(&destination, b"original file").await.unwrap();
+        tokio::fs::write(&temporary, b"corrupt transfer").await.unwrap();
+        let actual: [u8; 32] = sha2::Sha256::digest(b"corrupt transfer").into();
+        let expected: [u8; 32] = sha2::Sha256::digest(b"peer expected bytes").into();
+
+        assert!(commit_download_file(&temporary, &destination, actual, expected)
+            .await
+            .is_err());
+        assert_eq!(tokio::fs::read(&destination).await.unwrap(), b"original file");
+        tokio::fs::remove_file(temporary).await.unwrap();
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
 }
