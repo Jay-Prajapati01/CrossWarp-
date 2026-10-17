@@ -16,7 +16,10 @@ pub mod shared_files;
 pub mod transport;
 pub mod trust;
 
-pub use file_rpc::{serve_file_rpc, FileRequest, FileResponse, FileRpcError, MAX_RPC_UPLOAD_CHUNK};
+pub use file_rpc::{
+    spawn_file_rpc, FileRequest, FileResponse, FileRpcClient, FileRpcError, MAX_RPC_READ_CHUNK,
+    MAX_RPC_UPLOAD_CHUNK,
+};
 pub use identity_store::{IdentityStore, IdentityStoreError};
 pub use lan::{DiscoveredPeer, LanEndpoint, LanError, PeerBrowser};
 pub use ownership::{

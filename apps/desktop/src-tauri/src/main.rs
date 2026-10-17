@@ -1,14 +1,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 use unified_workspace_agent::protocol::{Capability, CapabilityState, DeviceId, SessionId};
 use unified_workspace_agent::{
-    pair_over_stream, serve_file_rpc, DeviceIdentity, HandshakeRole, HostPlatform, IdentityStore,
-    LanEndpoint, PairingApproval, PeerBrowser, SessionCoordinator, SharedEntry, SharedWorkspace,
-    TrustedPeerStore,
+    pair_over_stream, spawn_file_rpc, DeviceIdentity, FileRequest, FileResponse, FileRpcClient,
+    HandshakeRole, HostPlatform, IdentityStore, LanEndpoint, PairingApproval, PeerBrowser,
+    SessionCoordinator, SharedEntry, SharedWorkspace, TrustedPeerStore, MAX_RPC_READ_CHUNK,
+    MAX_RPC_UPLOAD_CHUNK,
 };
 
 #[derive(Clone, Default)]
@@ -32,6 +34,7 @@ struct PairingInner {
     pending: Mutex<HashMap<String, oneshot::Sender<bool>>>,
     trusted: Mutex<Vec<String>>,
     active: Mutex<HashSet<String>>,
+    clients: Mutex<HashMap<String, FileRpcClient>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -398,17 +401,24 @@ async fn run_pairing(
             "Both users approved; the encrypted transport is active. Choose a Shared Workspace folder to enable this device's host-side file service. Input, display, and live window services are not active yet.".into()
         },
     };
-    let _ = completion_app.emit("pairing-established", &result);
     let peer_for_task = result.peer_device_id.clone();
     let session_pairing = pairing.clone();
     let session_app = completion_app.clone();
+    let (client, task) = spawn_file_rpc(sender, receiver, workspace);
+    if let Ok(mut clients) = pairing.clients.lock() {
+        clients.insert(peer_for_task.clone(), client);
+    }
     tokio::spawn(async move {
-        let _ = serve_file_rpc(sender, receiver, workspace).await;
+        let _ = task.await;
         if let Ok(mut active) = session_pairing.active.lock() {
             active.remove(&peer_for_task);
         }
+        if let Ok(mut clients) = session_pairing.clients.lock() {
+            clients.remove(&peer_for_task);
+        }
         let _ = session_app.emit("pairing-ended", peer_for_task);
     });
+    let _ = completion_app.emit("pairing-established", &result);
     Ok(result)
 }
 
@@ -418,6 +428,149 @@ fn persist_approval(approval: &PairingApproval) -> Result<(), String> {
         .add_approved(approval)
         .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn remote_file_client(pairing: &PairingState, peer_device_id: &str) -> Result<FileRpcClient, String> {
+    pairing
+        .0
+        .clients
+        .lock()
+        .map_err(|_| "pairing state is unavailable")?
+        .get(peer_device_id)
+        .cloned()
+        .ok_or_else(|| "peer has no active encrypted file RPC session".to_owned())
+}
+
+#[tauri::command]
+async fn list_remote_workspace(
+    peer_device_id: String,
+    directory: Option<String>,
+    pairing: tauri::State<'_, PairingState>,
+) -> Result<Vec<SharedEntry>, String> {
+    match remote_file_client(&pairing, &peer_device_id)?
+        .request(FileRequest::List { directory })
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        FileResponse::Entries { entries } => Ok(entries),
+        FileResponse::Error { message } => Err(message),
+        _ => Err("peer returned an unexpected workspace response".into()),
+    }
+}
+
+#[tauri::command]
+async fn create_remote_directory(
+    peer_device_id: String,
+    path: String,
+    pairing: tauri::State<'_, PairingState>,
+) -> Result<(), String> {
+    match remote_file_client(&pairing, &peer_device_id)?
+        .request(FileRequest::CreateDirectory { path })
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        FileResponse::Ok => Ok(()),
+        FileResponse::Error { message } => Err(message),
+        _ => Err("peer returned an unexpected workspace response".into()),
+    }
+}
+
+#[tauri::command]
+async fn read_remote_file_range(
+    peer_device_id: String,
+    path: String,
+    offset: u64,
+    length: usize,
+    pairing: tauri::State<'_, PairingState>,
+) -> Result<Vec<u8>, String> {
+    if length > MAX_RPC_READ_CHUNK {
+        return Err("requested download chunk exceeds the RPC limit".into());
+    }
+    match remote_file_client(&pairing, &peer_device_id)?
+        .request(FileRequest::ReadRange { path, offset, length })
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        FileResponse::Bytes { bytes } => Ok(bytes),
+        FileResponse::Error { message } => Err(message),
+        _ => Err("peer returned an unexpected workspace response".into()),
+    }
+}
+
+#[tauri::command]
+async fn upload_remote_file(
+    peer_device_id: String,
+    destination_path: String,
+    source_path: String,
+    pairing: tauri::State<'_, PairingState>,
+) -> Result<(), String> {
+    let client = remote_file_client(&pairing, &peer_device_id)?;
+    let metadata = tokio::fs::metadata(&source_path)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("selected upload source is not a regular file".into());
+    }
+    let transfer = match client
+        .request(FileRequest::BeginUpload {
+            path: destination_path,
+            length: metadata.len(),
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        FileResponse::Transfer { transfer } => transfer,
+        FileResponse::Error { message } => return Err(message),
+        _ => return Err("peer returned an unexpected upload response".into()),
+    };
+    let result = async {
+        let mut file = tokio::fs::File::open(&source_path)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut hasher = sha2::Sha256::new();
+        let mut offset = 0u64;
+        loop {
+            let mut chunk = vec![0u8; MAX_RPC_UPLOAD_CHUNK];
+            let read = tokio::io::AsyncReadExt::read(&mut file, &mut chunk)
+                .await
+                .map_err(|error| error.to_string())?;
+            if read == 0 {
+                break;
+            }
+            chunk.truncate(read);
+            hasher.update(&chunk);
+            match client
+                .request(FileRequest::UploadChunk {
+                    transfer,
+                    offset,
+                    bytes: chunk,
+                })
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                FileResponse::Progress { written } if written == offset + read as u64 => {
+                    offset = written;
+                }
+                FileResponse::Error { message } => return Err(message),
+                _ => return Err("peer returned an unexpected upload progress response".into()),
+            }
+        }
+        let digest: [u8; 32] = hasher.finalize().into();
+        match client
+            .request(FileRequest::CommitUpload { transfer, sha256: digest })
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            FileResponse::Digest { sha256 } if sha256 == digest => Ok(()),
+            FileResponse::Error { message } => Err(message),
+            _ => Err("peer returned an unexpected upload completion response".into()),
+        }
+    }
+    .await;
+    if result.is_err() {
+        let _ = client.request(FileRequest::AbortUpload { transfer }).await;
+    }
+    result
 }
 
 #[tauri::command]
@@ -514,6 +667,10 @@ fn main() {
             discover_local_peers,
             pair_with_peer,
             respond_to_pairing,
+            list_remote_workspace,
+            create_remote_directory,
+            read_remote_file_range,
+            upload_remote_file,
             configure_shared_workspace,
             list_workspace_directory,
             create_workspace_directory

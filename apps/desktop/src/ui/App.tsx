@@ -47,6 +47,8 @@ export function App() {
   const [peers, setPeers] = useState<Peer[]>([]);
   const [challenge, setChallenge] = useState<PairingChallenge | null>(null);
   const [pairingResult, setPairingResult] = useState<PairingResult | null>(null);
+  const [remoteEntries, setRemoteEntries] = useState<WorkspaceEntry[] | null>(null);
+  const [remoteDirectory, setRemoteDirectory] = useState<string | null>(null);
 
   useEffect(() => {
     invoke<LocalStatus>("get_local_status")
@@ -56,6 +58,15 @@ export function App() {
       .then(setPlatform)
       .catch((reason: unknown) => setError(String(reason)));
   }, []);
+
+  useEffect(() => {
+    if (!pairingResult?.transport_active) {
+      setRemoteEntries(null);
+      setRemoteDirectory(null);
+      return;
+    }
+    void refreshRemoteDirectory(null, pairingResult.peer_device_id);
+  }, [pairingResult?.peer_device_id, pairingResult?.transport_active]);
 
   useEffect(() => {
     let unlisten: (() => void)[] = [];
@@ -129,6 +140,71 @@ export function App() {
     } catch (reason) { setError(String(reason)); setChallenge(null); }
   }
 
+  async function refreshRemoteDirectory(path: string | null, peerDeviceId = pairingResult?.peer_device_id) {
+    if (!peerDeviceId) return;
+    try {
+      const entries = await invoke<WorkspaceEntry[]>("list_remote_workspace", { peerDeviceId, directory: path });
+      setRemoteEntries(entries);
+      setRemoteDirectory(path);
+      setError(null);
+    } catch (reason) {
+      setRemoteEntries(null);
+      setError(String(reason));
+    }
+  }
+
+  async function createRemoteFolder() {
+    if (!pairingResult) return;
+    const name = window.prompt("New folder name on the peer Shared Workspace");
+    if (!name) return;
+    const path = [remoteDirectory, name].filter(Boolean).join("/");
+    try {
+      await invoke("create_remote_directory", { peerDeviceId: pairingResult.peer_device_id, path });
+      await refreshRemoteDirectory(remoteDirectory);
+    } catch (reason) { setError(String(reason)); }
+  }
+
+  async function uploadRemoteFile() {
+    if (!pairingResult) return;
+    const sourcePath = await open({ multiple: false, directory: false, title: "Choose a file to copy to the peer" });
+    if (!sourcePath || Array.isArray(sourcePath)) return;
+    const fileName = sourcePath.split(/[\\/]/).at(-1);
+    if (!fileName) return;
+    const destinationPath = [remoteDirectory, fileName].filter(Boolean).join("/");
+    try {
+      await invoke("upload_remote_file", { peerDeviceId: pairingResult.peer_device_id, destinationPath, sourcePath });
+      await refreshRemoteDirectory(remoteDirectory);
+      setError(null);
+    } catch (reason) { setError(String(reason)); }
+  }
+
+  async function downloadRemoteFile(entry: WorkspaceEntry) {
+    if (!pairingResult) return;
+    try {
+      const parts: BlobPart[] = [];
+      const chunkSize = 200 * 1024;
+      for (let offset = 0; offset < entry.size; offset += chunkSize) {
+        const bytes = await invoke<number[]>("read_remote_file_range", {
+          peerDeviceId: pairingResult.peer_device_id,
+          path: entry.relative_path,
+          offset,
+          length: Math.min(chunkSize, entry.size - offset),
+        });
+        const chunk = Uint8Array.from(bytes);
+        const copy = new ArrayBuffer(chunk.byteLength);
+        new Uint8Array(copy).set(chunk);
+        parts.push(copy);
+      }
+      const url = URL.createObjectURL(new Blob(parts));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = entry.name;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setError(null);
+    } catch (reason) { setError(String(reason)); }
+  }
+
   return (
     <main className="shell">
       <aside className="rail" aria-label="Main navigation">
@@ -165,7 +241,7 @@ export function App() {
               <strong>{status?.device_name ?? "Reading device…"}</strong>
               <span className="muted">{status?.implementation ?? "Checking local status"}</span>
             </div>
-            <div className="connection-state"><span className="state-dot" /> Not paired</div>
+            <div className="connection-state"><span className="state-dot" /> {pairingResult?.transport_active ? "Transport active" : "Not paired"}</div>
             <div className="device-divider" />
             <div className="peer-placeholder"><span className="add-peer">＋</span><span><strong>{peers.length ? `${peers.length} peer${peers.length === 1 ? "" : "s"} discovered` : network ? "Listening for peers" : "No peer session"}</strong><small>{network ? `${network.discovery} · ${network.listen_address}` : "Start local discovery to advertise this device and find others."}</small></span></div>
           </section>
@@ -173,20 +249,24 @@ export function App() {
           {peers.length > 0 && <section className="setup-panel"><div className="workspace-content"><strong>Discovered devices · not trusted yet</strong><p>Pair only when both people can compare and approve the same six-digit code.</p>{peers.map((peer) => <div className="peer-row" key={peer.device_id}><span>{peer.device_id} · {peer.addresses.join(", ")}</span><button onClick={() => peer.addresses[0] && pairWith(peer, peer.addresses[0])}>Request pairing</button></div>)}</div></section>}
           {pairingResult && <section className="setup-panel"><div className="workspace-content"><strong>Trusted peer · encrypted transport active</strong><p>{pairingResult.detail}</p><div className="workspace-root">Authenticated peer · {pairingResult.peer_device_id}</div></div></section>}
 
+          {pairingResult?.transport_active && <section className="setup-panel workspace-panel"><div className="setup-symbol">⇄</div><div className="workspace-content"><strong>Peer Shared Workspace</strong><p>Contents are requested over the authenticated encrypted connection. The peer must grant a folder before it appears here.</p><div className="workspace-actions"><button onClick={() => void refreshRemoteDirectory(remoteDirectory)}>Refresh peer folder</button><button onClick={() => void createRemoteFolder()}>New peer folder</button><button onClick={() => void uploadRemoteFile()}>Upload file</button></div>{remoteEntries && <><div className="workspace-root">Remote folder · {remoteDirectory || "/"}</div><div className="file-list">{remoteDirectory && <button className="file-row folder-row" onClick={() => void refreshRemoteDirectory(remoteDirectory.includes("/") ? remoteDirectory.slice(0, remoteDirectory.lastIndexOf("/")) : null)}>↰ <span>Parent folder</span></button>}{remoteEntries.map((entry) => <button className="file-row" key={entry.relative_path} onClick={() => entry.kind === "directory" ? void refreshRemoteDirectory(entry.relative_path) : void downloadRemoteFile(entry)}><span>{entry.kind === "directory" ? "▰" : "▤"} {entry.name}</span><small>{entry.kind === "directory" ? "Folder" : `${entry.size.toLocaleString()} bytes · download`}</small></button>)}{remoteEntries.length === 0 && <span className="empty-files">Peer folder is empty.</span>}</div></>}</div></section>}
+
           {platform && <section className="setup-panel"><div className="setup-symbol">⌘</div><div className="workspace-content"><strong>Windows compatibility diagnostics · OS floors only</strong><p>{platform.os_name}{platform.version ? ` · build ${platform.version.build}` : ""} · {platform.architecture}</p><div className="workspace-root">IDD 1.11 documented OS floor: {platform.meets_iddcx_111_os_floor ? "met" : "not met"} · HWND capture API floor (Windows 10 1903): {platform.meets_wgc_create_for_window_os_floor ? "met" : "not met"}</div><p>These checks report documented OS build boundaries only. They do not confirm an installed driver, capture permission, hardware support, or complete feature compatibility.</p></div></section>}
 
-          {network && <section className="setup-panel"><div className="setup-symbol">⌁</div><div className="workspace-content"><strong>Device identity and LAN transport</strong><p>Identity is saved with Windows DPAPI. Discovery advertisements are hints only; authenticated pairing and remote capabilities are not connected to this UI yet.</p><div className="workspace-root">Device fingerprint · {network.device_id}</div>{peers.map((peer) => <div className="workspace-root" key={peer.device_id}>Untrusted discovered peer · {peer.device_id} · {peer.addresses.join(", ")}</div>)}</div></section>}
+          {network && <section className="setup-panel"><div className="setup-symbol">⌁</div><div className="workspace-content"><strong>Device identity and LAN transport</strong><p>Identity is saved with Windows DPAPI. Discovery advertisements are untrusted hints; pairing uses two-sided code approval. Shared Workspace RPC is available on an approved encrypted session.</p><div className="workspace-root">Device fingerprint · {network.device_id}</div>{peers.map((peer) => <div className="workspace-root" key={peer.device_id}>Untrusted discovered peer · {peer.device_id} · {peer.addresses.join(", ")}</div>)}</div></section>}
 
           <div className="section-heading"><div><h2>Connected capabilities</h2><p>Each service will report its own live state.</p></div><span className="all-state">0 of 4 available</span></div>
           <section className="capability-grid" aria-label="Capability status">
             {(status?.capabilities ?? Object.keys(labels).map((capability) => ({ capability, state: "checking", detail: "Loading local status." }))).map((capability) => {
               const label = labels[capability.capability] ?? { title: capability.capability, glyph: "•" };
+              const filesReady = capability.capability === "shared_files" && Boolean(pairingResult?.transport_active && remoteEntries);
+              const detail = filesReady ? "Peer folder is responding over authenticated RPC; browse, upload, and download are available." : capability.detail;
               return (
                 <article className="capability-card" key={capability.capability}>
-                  <div className="capability-top"><span className="capability-icon">{label.glyph}</span><span className="state-tag"><i /> Unavailable</span></div>
+                  <div className="capability-top"><span className="capability-icon">{label.glyph}</span><span className="state-tag"><i /> {filesReady ? "Available" : "Unavailable"}</span></div>
                   <h3>{label.title}</h3>
-                  <p>{capability.detail}</p>
-                  <div className="card-footer"><span>Inactive</span><span aria-hidden="true">↗</span></div>
+                  <p>{detail}</p>
+                  <div className="card-footer"><span>{filesReady ? "Active on this session" : "Inactive"}</span><span aria-hidden="true">↗</span></div>
                 </article>
               );
             })}
@@ -198,9 +278,9 @@ export function App() {
 
           <section className="setup-panel workspace-panel">
             <div className="setup-symbol">✦</div>
-            <div className="workspace-content"><strong>Shared Workspace</strong><p>This device's selected folder. Remote access requires a paired connection and is not active yet.</p>
+            <div className="workspace-content"><strong>Shared Workspace</strong><p>This device's selected folder is offered to a peer only while an approved encrypted session is active.</p>
               <div className="workspace-actions"><button onClick={chooseWorkspace}>{workspace ? "Change authorized folder" : "Choose a folder"}</button>{workspace && <button onClick={createFolder}>New folder</button>}</div>
-              {workspace && <><div className="workspace-root">Local only · {workspace.root}</div><div className="file-list">
+              {workspace && <><div className="workspace-root">Authorized host folder · {workspace.root}</div><div className="file-list">
                 {directory && <button className="file-row folder-row" onClick={() => openDirectory(directory.includes("/") ? directory.slice(0, directory.lastIndexOf("/")) : null)}>↰ <span>Parent folder</span></button>}
                 {workspace.entries.map((entry) => <button className="file-row" key={entry.relative_path} disabled={entry.kind !== "directory"} onClick={() => openDirectory(entry.relative_path)}><span>{entry.kind === "directory" ? "▰" : "▤"} {entry.name}</span><small>{entry.kind === "directory" ? "Folder" : `${entry.size.toLocaleString()} bytes`}</small></button>)}
                 {workspace.entries.length === 0 && <span className="empty-files">This folder is empty.</span>}
