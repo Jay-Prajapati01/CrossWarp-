@@ -12,7 +12,7 @@ struct WorkspaceState(Mutex<Option<SharedWorkspace>>);
 struct CapabilityReport {
     capability: &'static str,
     state: &'static str,
-    detail: &'static str,
+    detail: String,
 }
 
 #[derive(Serialize)]
@@ -24,26 +24,59 @@ struct LocalStatus {
 }
 
 #[tauri::command]
-fn get_local_status() -> LocalStatus {
+fn get_local_status(state: tauri::State<'_, WorkspaceState>) -> LocalStatus {
+    let has_local_workspace = state
+        .0
+        .lock()
+        .map(|workspace| workspace.is_some())
+        .unwrap_or(false);
     let mut session = SessionCoordinator::new(
         SessionId::new(),
         DeviceId(std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Unknown device".into())),
         DeviceId("unpaired".into()),
     );
     let reports = [
-        (Capability::Input, "input", "Input routing is not connected."),
-        (Capability::Files, "shared_files", "No authorized Shared Workspace is configured."),
-        (Capability::ExtendedDisplay, "extended_display", "The IddCx driver and stream are not available."),
-        (Capability::WindowPortal, "live_window_handoff", "No capture or remote window transport is active."),
+        (
+            Capability::Input,
+            "input",
+            "Input routing is not connected.".to_owned(),
+        ),
+        (
+            Capability::Files,
+            "shared_files",
+            if has_local_workspace {
+                "A local folder is selected; connected sharing requires a paired peer transport."
+                    .to_owned()
+            } else {
+                "No local Shared Workspace folder is selected; connected sharing is unavailable."
+                    .to_owned()
+            },
+        ),
+        (
+            Capability::ExtendedDisplay,
+            "extended_display",
+            "The IddCx driver and stream are not available.".to_owned(),
+        ),
+        (
+            Capability::WindowPortal,
+            "live_window_handoff",
+            "No capture or remote window transport is active.".to_owned(),
+        ),
     ];
     let capabilities = reports
         .into_iter()
         .map(|(capability, name, detail)| {
             let _ = session.set_capability(
                 capability,
-                CapabilityState::Blocked { reason: detail.to_owned() },
+                CapabilityState::Blocked {
+                    reason: detail.clone(),
+                },
             );
-            CapabilityReport { capability: name, state: "unavailable", detail }
+            CapabilityReport {
+                capability: name,
+                state: "unavailable",
+                detail,
+            }
         })
         .collect();
     LocalStatus {
@@ -70,8 +103,10 @@ fn configure_shared_workspace(
         .list_directory(None, 10_000)
         .map_err(|error| error.to_string())?;
     let root = workspace.root_path().to_string_lossy().into_owned();
-    *state.0.lock().map_err(|_| "workspace state is unavailable".to_owned())? =
-        Some(workspace);
+    *state
+        .0
+        .lock()
+        .map_err(|_| "workspace state is unavailable".to_owned())? = Some(workspace);
     Ok(WorkspaceView { root, entries })
 }
 
@@ -80,9 +115,16 @@ fn list_workspace_directory(
     path: Option<String>,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<Vec<SharedEntry>, String> {
-    let guard = state.0.lock().map_err(|_| "workspace state is unavailable".to_owned())?;
-    let workspace = guard.as_ref().ok_or_else(|| "select a Shared Workspace folder first".to_owned())?;
-    workspace.list_directory(path.as_deref(), 10_000).map_err(|error| error.to_string())
+    let guard = state
+        .0
+        .lock()
+        .map_err(|_| "workspace state is unavailable".to_owned())?;
+    let workspace = guard
+        .as_ref()
+        .ok_or_else(|| "select a Shared Workspace folder first".to_owned())?;
+    workspace
+        .list_directory(path.as_deref(), 10_000)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -90,9 +132,16 @@ fn create_workspace_directory(
     path: String,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<(), String> {
-    let guard = state.0.lock().map_err(|_| "workspace state is unavailable".to_owned())?;
-    let workspace = guard.as_ref().ok_or_else(|| "select a Shared Workspace folder first".to_owned())?;
-    workspace.create_directory(&path).map_err(|error| error.to_string())
+    let guard = state
+        .0
+        .lock()
+        .map_err(|_| "workspace state is unavailable".to_owned())?;
+    let workspace = guard
+        .as_ref()
+        .ok_or_else(|| "select a Shared Workspace folder first".to_owned())?;
+    workspace
+        .create_directory(&path)
+        .map_err(|error| error.to_string())
 }
 
 fn main() {
