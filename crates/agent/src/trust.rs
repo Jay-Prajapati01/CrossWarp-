@@ -142,6 +142,12 @@ impl PairingApproval {
     pub fn is_mutually_approved(&self) -> bool {
         self.local_proof.is_some() && self.peer_proof.is_some()
     }
+
+    pub fn approved_peer_public_key(&self) -> Option<[u8; 32]> {
+        self.is_mutually_approved()
+            .then(|| self.peer_proof.as_ref().map(|proof| proof.public_key))
+            .flatten()
+    }
 }
 
 impl DeviceIdentity {

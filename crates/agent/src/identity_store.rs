@@ -130,7 +130,7 @@ fn replace_file(source: &Path, destination: &Path) -> Result<(), IdentityStoreEr
 
 #[cfg(windows)]
 fn protect(plaintext: &[u8]) -> Result<Vec<u8>, IdentityStoreError> {
-    crypt(plaintext, true)
+    protect_with_entropy(plaintext, APP_ENTROPY)
 }
 
 #[cfg(not(windows))]
@@ -138,9 +138,39 @@ fn protect(_plaintext: &[u8]) -> Result<Vec<u8>, IdentityStoreError> {
     Err(IdentityStoreError::UnsupportedPlatform)
 }
 
+pub(crate) fn protect_with_entropy(
+    plaintext: &[u8],
+    entropy: &[u8],
+) -> Result<Vec<u8>, IdentityStoreError> {
+    #[cfg(windows)]
+    {
+        crypt(plaintext, true, entropy)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (plaintext, entropy);
+        Err(IdentityStoreError::UnsupportedPlatform)
+    }
+}
+
+pub(crate) fn unprotect_with_entropy(
+    ciphertext: &[u8],
+    entropy: &[u8],
+) -> Result<Vec<u8>, IdentityStoreError> {
+    #[cfg(windows)]
+    {
+        crypt(ciphertext, false, entropy)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (ciphertext, entropy);
+        Err(IdentityStoreError::UnsupportedPlatform)
+    }
+}
+
 #[cfg(windows)]
 fn unprotect(ciphertext: &[u8]) -> Result<Vec<u8>, IdentityStoreError> {
-    crypt(ciphertext, false)
+    crypt(ciphertext, false, APP_ENTROPY)
 }
 
 #[cfg(not(windows))]
@@ -149,7 +179,7 @@ fn unprotect(_ciphertext: &[u8]) -> Result<Vec<u8>, IdentityStoreError> {
 }
 
 #[cfg(windows)]
-fn crypt(data: &[u8], encrypt: bool) -> Result<Vec<u8>, IdentityStoreError> {
+fn crypt(data: &[u8], encrypt: bool, entropy_bytes: &[u8]) -> Result<Vec<u8>, IdentityStoreError> {
     use std::ffi::c_void;
 
     #[repr(C)]
@@ -192,8 +222,9 @@ fn crypt(data: &[u8], encrypt: bool) -> Result<Vec<u8>, IdentityStoreError> {
         data: data.as_ptr() as *mut u8,
     };
     let entropy = DataBlob {
-        size: APP_ENTROPY.len() as u32,
-        data: APP_ENTROPY.as_ptr() as *mut u8,
+        size: u32::try_from(entropy_bytes.len())
+            .map_err(|_| IdentityStoreError::InvalidIdentity)?,
+        data: entropy_bytes.as_ptr() as *mut u8,
     };
     let mut output = DataBlob {
         size: 0,
