@@ -1,0 +1,16 @@
+cmake_minimum_required(VERSION 3.24)
+project(UnifiedInputBridge LANGUAGES CXX)
+
+add_library(unified-input-bridge STATIC input_bridge.cpp)
+target_compile_features(unified-input-bridge PUBLIC cxx_std_20)
+target_compile_definitions(unified-input-bridge PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX UNIFIED_INPUT_BRIDGE_STATIC)
+target_include_directories(unified-input-bridge PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(unified-input-bridge PRIVATE user32)
+
+add_executable(input-bridge-contract-test contract_test.cpp input_bridge.cpp)
+target_compile_features(input-bridge-contract-test PRIVATE cxx_std_20)
+target_compile_definitions(input-bridge-contract-test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX UNIFIED_INPUT_BRIDGE_STATIC)
+target_include_directories(input-bridge-contract-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(input-bridge-contract-test PRIVATE user32)
+enable_testing()
+add_test(NAME input-bridge-contract COMMAND input-bridge-contract-test)

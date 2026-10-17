@@ -11,7 +11,7 @@
 
 ## Checks on JACK
 
-- `cargo test --workspace`: **38 passed, 0 failed**. The RPC test pairs identities over a loopback duplex transport, starts an actor on both endpoints, verifies a no-grant response, updates the host grant on the live connection, verifies a listing, and issues requests concurrently from both endpoints.
+- `cargo test --workspace`: **39 passed, 0 failed**. The RPC test pairs identities over a loopback duplex transport, starts an actor on both endpoints, verifies a no-grant response, updates the host grant on the live connection, verifies a listing, and issues requests concurrently from both endpoints. The added Windows input validation test does not inject system input.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings`: passed.
 - `cargo fmt --all -- --check`: passed.

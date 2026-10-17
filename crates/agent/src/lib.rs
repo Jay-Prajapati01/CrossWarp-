@@ -15,6 +15,8 @@ pub mod session;
 pub mod shared_files;
 pub mod transport;
 pub mod trust;
+#[cfg(windows)]
+pub mod windows_input;
 
 pub use file_rpc::{
     spawn_file_rpc, FileRequest, FileResponse, FileRpcClient, FileRpcError, MAX_RPC_READ_CHUNK,
