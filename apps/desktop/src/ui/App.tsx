@@ -36,6 +36,12 @@ type RemoteTransferProgress = { peer_device_id: string; direction: "upload" | "d
 type InputDiagnostic = { running: boolean; total: number; pointer_move: number; pointer_button: number; pointer_wheel: number; key_transition: number; error: string | null };
 type PortalPosition = { left: number; top: number };
 
+declare global {
+  interface Window {
+    __CROSSWARP_PORTAL?: { peer_device_id: string; stream_id: number };
+  }
+}
+
 const labels: Record<string, { title: string; glyph: string }> = {
   input: { title: "Shared input", glyph: "↔" },
   shared_files: { title: "Shared Workspace", glyph: "▤" },
@@ -44,6 +50,10 @@ const labels: Record<string, { title: string; glyph: string }> = {
 };
 
 export function App() {
+  return window.__CROSSWARP_PORTAL ? <NativePortalWindow /> : <Dashboard />;
+}
+
+function Dashboard() {
   const [status, setStatus] = useState<LocalStatus | null>(null);
   const [platform, setPlatform] = useState<HostPlatform | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -305,6 +315,14 @@ export function App() {
     await portalSendQueue.current;
   }
 
+  async function openNativePortal() {
+    if (!pairingResult || !remoteWindowFrame) return;
+    try {
+      await invoke("open_native_window_portal", { peerDeviceId: pairingResult.peer_device_id, streamId: remoteWindowFrame.stream_id });
+      setWindowStreamError(null);
+    } catch (reason) { setWindowStreamError(String(reason)); }
+  }
+
   function beginPortalDrag(event: React.PointerEvent<HTMLDivElement>) {
     if ((event.target as HTMLElement).closest("button")) return;
     portalDrag.current = { pointerId: event.pointerId, offsetX: event.clientX - portalPosition.left, offsetY: event.clientY - portalPosition.top };
@@ -480,7 +498,7 @@ export function App() {
 
           {windowShareRequest && <section className="setup-panel" role="alert"><div className="setup-symbol">▱</div><div className="workspace-content"><strong>Approve live window and interactive control?</strong><p>{windowShareRequest.peer_device_id} is requesting permission to show stream {windowShareRequest.stream_id}, sized {windowShareRequest.width} × {windowShareRequest.height}. Frames and forwarded pointer, wheel, and keyboard input remain disabled until approved. Input is limited to the selected visible window and Windows UIPI restrictions still apply.</p><div className="workspace-actions"><button onClick={() => void respondToWindowShare(true)}>Approve live control</button><button onClick={() => void respondToWindowShare(false)}>Decline</button></div></div></section>}
 
-          {pairingResult?.transport_active && <section className="setup-panel workspace-panel"><div className="setup-symbol">▱</div><div className="workspace-content"><strong>Live Window Handoff · interactive proxy</strong><p>The approved live window remains on its source PC. The proxy can be moved and resized in this dashboard. Click its image to focus it; pointer, wheel, and keyboard input are forwarded to that visible source window. Windows security boundaries still apply.</p>{windowStreamError && <div className="workspace-root" role="status">{windowStreamError}</div>}{remoteWindowFrame?.peer_device_id === pairingResult.peer_device_id && <div className="remote-window-preview portal-floating" style={{ left: portalPosition.left, top: portalPosition.top }}><div className="portal-titlebar" onPointerDown={beginPortalDrag} onPointerMove={movePortal} onPointerUp={() => { portalDrag.current = null; }} onPointerCancel={() => { portalDrag.current = null; }}><span>Live proxy · {remoteWindowFrame.width} × {remoteWindowFrame.height} · frame {remoteWindowFrame.sequence}</span><button onClick={() => setPortalPosition({ left: 24, top: 120 })}>Reset position</button></div><img tabIndex={0} onPointerMove={(event) => { const now = performance.now(); if (now - lastPortalMove.current >= 32) { lastPortalMove.current = now; const point = portalPoint(event); void sendPortalInput({ kind: "pointer_move", ...point }); } }} onPointerDown={(event) => { event.currentTarget.focus(); event.currentTarget.setPointerCapture(event.pointerId); const point = portalPoint(event); const button = event.button === 1 ? 3 : event.button === 2 ? 2 : event.button + 1; heldPortalButtons.current.set(button, point); void sendPortalInput({ kind: "pointer_button", ...point, button, down: true }); }} onPointerUp={(event) => { const point = portalPoint(event); const button = event.button === 1 ? 3 : event.button === 2 ? 2 : event.button + 1; heldPortalButtons.current.delete(button); void sendPortalInput({ kind: "pointer_button", ...point, button, down: false }); }} onPointerCancel={() => { for (const [button, point] of heldPortalButtons.current) void sendPortalInput({ kind: "pointer_button", ...point, button, down: false }); heldPortalButtons.current.clear(); }} onBlur={releasePortalInputs} onWheel={(event) => { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); const point = { x: Math.max(0, Math.min(65535, Math.round((event.clientX - rect.left) * 65535 / rect.width))), y: Math.max(0, Math.min(65535, Math.round((event.clientY - rect.top) * 65535 / rect.height))) }; void sendPortalInput({ kind: "pointer_wheel", ...point, delta: -Math.sign(event.deltaY) * 120, horizontal: Math.abs(event.deltaX) > Math.abs(event.deltaY) }); }} onKeyDown={(event) => { if (event.repeat) return; event.preventDefault(); heldPortalKeys.current.add(event.nativeEvent.keyCode); void sendPortalInput({ kind: "key", virtual_key: event.nativeEvent.keyCode, scan_code: 0, extended: false, down: true }); }} onKeyUp={(event) => { event.preventDefault(); heldPortalKeys.current.delete(event.nativeEvent.keyCode); void sendPortalInput({ kind: "key", virtual_key: event.nativeEvent.keyCode, scan_code: 0, extended: false, down: false }); }} onContextMenu={(event) => event.preventDefault()} src={"data:image/jpeg;base64," + remoteWindowFrame.jpeg_base64} width={remoteWindowFrame.width} height={remoteWindowFrame.height} alt="Approved interactive live remote window proxy" /><div className="portal-actions"><button onClick={() => void revokeRemoteWindowPreview()}>Revoke proxy and stop remote capture</button></div></div>}</div></section>}
+          {pairingResult?.transport_active && <section className="setup-panel workspace-panel"><div className="setup-symbol">▱</div><div className="workspace-content"><strong>Live Window Handoff · interactive proxy</strong><p>The approved live window remains on its source PC. The proxy can be moved and resized in this dashboard. Click its image to focus it; pointer, wheel, and keyboard input are forwarded to that visible source window. Windows security boundaries still apply.</p>{windowStreamError && <div className="workspace-root" role="status">{windowStreamError}</div>}{remoteWindowFrame?.peer_device_id === pairingResult.peer_device_id && <div className="remote-window-preview portal-floating" style={{ left: portalPosition.left, top: portalPosition.top }}><div className="portal-titlebar" onPointerDown={beginPortalDrag} onPointerMove={movePortal} onPointerUp={() => { portalDrag.current = null; }} onPointerCancel={() => { portalDrag.current = null; }}><span>Live proxy · {remoteWindowFrame.width} × {remoteWindowFrame.height} · frame {remoteWindowFrame.sequence}</span><button onClick={() => setPortalPosition({ left: 24, top: 120 })}>Reset position</button></div><img tabIndex={0} onPointerMove={(event) => { const now = performance.now(); if (now - lastPortalMove.current >= 32) { lastPortalMove.current = now; const point = portalPoint(event); void sendPortalInput({ kind: "pointer_move", ...point }); } }} onPointerDown={(event) => { event.currentTarget.focus(); event.currentTarget.setPointerCapture(event.pointerId); const point = portalPoint(event); const button = event.button === 1 ? 3 : event.button === 2 ? 2 : event.button + 1; heldPortalButtons.current.set(button, point); void sendPortalInput({ kind: "pointer_button", ...point, button, down: true }); }} onPointerUp={(event) => { const point = portalPoint(event); const button = event.button === 1 ? 3 : event.button === 2 ? 2 : event.button + 1; heldPortalButtons.current.delete(button); void sendPortalInput({ kind: "pointer_button", ...point, button, down: false }); }} onPointerCancel={() => { for (const [button, point] of heldPortalButtons.current) void sendPortalInput({ kind: "pointer_button", ...point, button, down: false }); heldPortalButtons.current.clear(); }} onBlur={releasePortalInputs} onWheel={(event) => { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); const point = { x: Math.max(0, Math.min(65535, Math.round((event.clientX - rect.left) * 65535 / rect.width))), y: Math.max(0, Math.min(65535, Math.round((event.clientY - rect.top) * 65535 / rect.height))) }; void sendPortalInput({ kind: "pointer_wheel", ...point, delta: -Math.sign(event.deltaY) * 120, horizontal: Math.abs(event.deltaX) > Math.abs(event.deltaY) }); }} onKeyDown={(event) => { if (event.repeat) return; event.preventDefault(); heldPortalKeys.current.add(event.nativeEvent.keyCode); void sendPortalInput({ kind: "key", virtual_key: event.nativeEvent.keyCode, scan_code: 0, extended: false, down: true }); }} onKeyUp={(event) => { event.preventDefault(); heldPortalKeys.current.delete(event.nativeEvent.keyCode); void sendPortalInput({ kind: "key", virtual_key: event.nativeEvent.keyCode, scan_code: 0, extended: false, down: false }); }} onContextMenu={(event) => event.preventDefault()} src={"data:image/jpeg;base64," + remoteWindowFrame.jpeg_base64} width={remoteWindowFrame.width} height={remoteWindowFrame.height} alt="Approved interactive live remote window proxy" /><div className="portal-actions"><button onClick={() => void openNativePortal()}>Open as a native desktop window</button><button onClick={() => void revokeRemoteWindowPreview()}>Revoke proxy and stop remote capture</button></div></div>}</div></section>}
 
           {pairingResult?.transport_active && <section className="setup-panel workspace-panel"><div className="setup-symbol">▱</div><div className="workspace-content"><strong>Present a live window</strong><p>Choose a visible window from this PC. Your confirmation permits capture and input in this selected window; the other PC must separately approve before pixels or remote controls are enabled. This does not transfer the running process.</p><div className="workspace-actions"><button onClick={() => void refreshCapturableWindows()}>Find local windows</button>{windowShareActive && <button onClick={() => void stopWindowShare()}>Stop sharing</button>}</div>{capturableWindows?.map((windowInfo) => <div className="peer-row" key={windowInfo.hwnd}><span>{windowInfo.title}</span><button disabled={windowShareActive} onClick={() => void startWindowShare(windowInfo)}>Present live</button></div>)}</div></section>}
 
@@ -539,4 +557,64 @@ export function App() {
       </section>
     </main>
   );
+}
+
+function NativePortalWindow() {
+  const config = window.__CROSSWARP_PORTAL!;
+  const [frame, setFrame] = useState<RemoteWindowFrame | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const lastMove = useRef(0);
+  const queue = useRef<Promise<void>>(Promise.resolve());
+  const heldButtons = useRef(new Map<number, { x: number; y: number }>());
+  const heldKeys = useRef(new Set<number>());
+
+  useEffect(() => {
+    document.body.classList.add("portal-body");
+    return () => document.body.classList.remove("portal-body");
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    let querying = false;
+    const poll = async () => {
+      if (querying) return;
+      querying = true;
+      try {
+        const latest = await invoke<RemoteWindowFrame | null>("get_remote_window_frame", { peerDeviceId: config.peer_device_id });
+        if (!active) return;
+        if (!latest || latest.stream_id !== config.stream_id || Date.now() - latest.received_at_unix_ms > 1500) setFrame(null);
+        else setFrame((current) => current?.sequence === latest.sequence ? current : latest);
+      } catch (reason) { if (active) setError(String(reason)); }
+      finally { querying = false; }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 50);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [config.peer_device_id, config.stream_id]);
+
+  function forward(event: object) {
+    const peerDeviceId = config.peer_device_id;
+    const sourceStreamId = config.stream_id;
+    queue.current = queue.current.then(() => invoke("send_window_portal_input", { peerDeviceId, sourceStreamId, event })).then(() => undefined).catch((reason: unknown) => setError(String(reason)));
+  }
+
+  function releaseHeld() {
+    for (const [button, point] of heldButtons.current) forward({ kind: "pointer_button", ...point, button, down: false });
+    for (const virtual_key of heldKeys.current) forward({ kind: "key", virtual_key, scan_code: 0, extended: false, down: false });
+    heldButtons.current.clear();
+    heldKeys.current.clear();
+  }
+
+  function point(event: React.PointerEvent<HTMLImageElement> | React.WheelEvent<HTMLImageElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const scale = Math.min(rect.width / event.currentTarget.naturalWidth, rect.height / event.currentTarget.naturalHeight);
+    const width = event.currentTarget.naturalWidth * scale;
+    const height = event.currentTarget.naturalHeight * scale;
+    const x = event.clientX - rect.left - (rect.width - width) / 2;
+    const y = event.clientY - rect.top - (rect.height - height) / 2;
+    if (x < 0 || y < 0 || x > width || y > height) return null;
+    return { x: Math.max(0, Math.min(65535, Math.round(x * 65535 / width))), y: Math.max(0, Math.min(65535, Math.round(y * 65535 / height))) };
+  }
+
+  return <main className="native-portal"><header><span>Live window · {config.peer_device_id.slice(0, 12)}</span><span>Origin app remains on its PC</span></header>{error && <div className="portal-error" role="status">{error}</div>}{frame ? <img tabIndex={0} src={"data:image/jpeg;base64," + frame.jpeg_base64} width={frame.width} height={frame.height} alt="Interactive remote window" onPointerMove={(event) => { const now = performance.now(); if (now - lastMove.current < 32) return; lastMove.current = now; const position = point(event); if (position) forward({ kind: "pointer_move", ...position }); }} onPointerDown={(event) => { event.currentTarget.focus(); event.currentTarget.setPointerCapture(event.pointerId); const button = event.button === 1 ? 3 : event.button === 2 ? 2 : event.button + 1; const position = point(event); if (!position) return; heldButtons.current.set(button, position); forward({ kind: "pointer_button", ...position, button, down: true }); }} onPointerUp={(event) => { const button = event.button === 1 ? 3 : event.button === 2 ? 2 : event.button + 1; const position = point(event) ?? heldButtons.current.get(button); if (!position || !heldButtons.current.has(button)) return; heldButtons.current.delete(button); forward({ kind: "pointer_button", ...position, button, down: false }); }} onPointerCancel={releaseHeld} onBlur={releaseHeld} onWheel={(event) => { event.preventDefault(); const position = point(event); if (position) forward({ kind: "pointer_wheel", ...position, delta: -Math.sign(event.deltaY) * 120, horizontal: Math.abs(event.deltaX) > Math.abs(event.deltaY) }); }} onKeyDown={(event) => { if (event.repeat) return; event.preventDefault(); heldKeys.current.add(event.nativeEvent.keyCode); forward({ kind: "key", virtual_key: event.nativeEvent.keyCode, scan_code: 0, extended: false, down: true }); }} onKeyUp={(event) => { event.preventDefault(); heldKeys.current.delete(event.nativeEvent.keyCode); forward({ kind: "key", virtual_key: event.nativeEvent.keyCode, scan_code: 0, extended: false, down: false }); }} onContextMenu={(event) => event.preventDefault()} /> : <div className="portal-paused">Waiting for the approved live window stream…</div>}</main>;
 }

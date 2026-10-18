@@ -927,6 +927,45 @@ async fn send_window_portal_input(
     send_media_frame(&channel, MediaLane::Window, &frame).await.map_err(|error| error.to_string())
 }
 
+#[derive(Serialize)]
+struct PortalWindowConfig {
+    peer_device_id: String,
+    stream_id: u64,
+}
+
+#[tauri::command]
+async fn open_native_window_portal(
+    app: tauri::AppHandle,
+    peer_device_id: String,
+    stream_id: u64,
+    pairing: tauri::State<'_, PairingState>,
+) -> Result<String, String> {
+    use tauri::Manager;
+
+    let frame = pairing.0.window_frames.lock().map_err(|_| "window preview state is unavailable")?.get(&peer_device_id).cloned().ok_or("no approved live preview")?;
+    if frame.stream_id != stream_id || frame.received_at_unix_ms.saturating_add(1500) < now_unix_ms() {
+        return Err("the live preview is stale or belongs to another stream".into());
+    }
+    let digest = sha2::Sha256::digest(peer_device_id.as_bytes());
+    let peer_tag: String = digest[..6].iter().map(|byte| format!("{byte:02x}")).collect();
+    let label = format!("portal-{peer_tag}-{stream_id}");
+    if let Some(window) = app.get_webview_window(&label) {
+        window.set_focus().map_err(|error| error.to_string())?;
+        return Ok(label);
+    }
+    let config = serde_json::to_string(&PortalWindowConfig { peer_device_id, stream_id }).map_err(|error| error.to_string())?;
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("index.html".into()))
+        .title("CrossWarp · Live Window")
+        .inner_size(f64::from(frame.width.min(1280)), f64::from(frame.height.min(900)))
+        .min_inner_size(360.0, 240.0)
+        .resizable(true)
+        .center()
+        .initialization_script(format!("window.__CROSSWARP_PORTAL = {config};"))
+        .build()
+        .map_err(|error| error.to_string())?;
+    Ok(label)
+}
+
 fn now_unix_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis().min(u128::from(u64::MAX)) as u64
 }
@@ -1879,6 +1918,7 @@ fn main() {
             stop_window_share,
             revoke_remote_window_preview,
             send_window_portal_input,
+            open_native_window_portal,
             disconnect_peer,
             list_remote_workspace,
             create_remote_directory,
