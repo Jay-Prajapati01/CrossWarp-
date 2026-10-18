@@ -1,24 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
   <title id="title">CrossWarp</title>
-  <desc id="desc">Two connected displays form a forward-moving cross-device path.</desc>
+  <desc id="desc">Two connected workspaces with a forward-moving path between them.</desc>
   <defs>
-    <linearGradient id="field" x1="12" y1="8" x2="118" y2="120" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#172B57"/>
-      <stop offset="1" stop-color="#101A32"/>
+    <linearGradient id="background" x1="14" y1="8" x2="114" y2="120" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#172A4D"/>
+      <stop offset="1" stop-color="#101A30"/>
     </linearGradient>
-    <linearGradient id="signal" x1="34" y1="92" x2="96" y2="34" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#42E3BE"/>
-      <stop offset="1" stop-color="#78F2D3"/>
+    <linearGradient id="warp" x1="37" y1="90" x2="91" y2="42" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4DE0C1"/>
+      <stop offset="1" stop-color="#91F2D8"/>
     </linearGradient>
   </defs>
-  <rect x="4" y="4" width="120" height="120" rx="30" fill="url(#field)"/>
-  <path d="M31 25h38a8 8 0 0 1 8 8v29a8 8 0 0 1-8 8H31a8 8 0 0 1-8-8V33a8 8 0 0 1 8-8Z" fill="#F7FAFF"/>
-  <path d="M87 58h10a8 8 0 0 1 8 8v29a8 8 0 0 1-8 8H59a8 8 0 0 1-8-8V88" fill="#9FB8F2"/>
-  <path d="M43 70v10m13-10v10" stroke="#F7FAFF" stroke-width="6" stroke-linecap="round"/>
-  <path d="M37 40h25" stroke="#B8C8E8" stroke-width="5" stroke-linecap="round"/>
-  <path d="M37 53h13" stroke="#D8E1F1" stroke-width="4" stroke-linecap="round"/>
-  <path d="M59 87 75 71a10 10 0 0 1 14 0l3 3" fill="none" stroke="url(#signal)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="m82 59 12 1-1 12" fill="none" stroke="url(#signal)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="89" cy="87" r="3.5" fill="#182B53"/>
-  <circle cx="100" cy="87" r="3.5" fill="#182B53"/>
+  <rect x="4" y="4" width="120" height="120" rx="31" fill="url(#background)"/>
+  <rect x="20" y="21" width="59" height="43" rx="9" fill="none" stroke="#F3F6FC" stroke-width="6"/>
+  <path d="M39 73h21m-10-9v9" fill="none" stroke="#B8C8E4" stroke-width="5" stroke-linecap="round"/>
+  <rect x="49" y="66" width="59" height="42" rx="9" fill="none" stroke="#91A9D9" stroke-width="6"/>
+  <path d="M38 43h22" fill="none" stroke="#AEBEDB" stroke-width="5" stroke-linecap="round"/>
+  <path d="M39 91h15c7 0 11-3 15-9l7-12c4-6 8-9 15-9h3" fill="none" stroke="url(#warp)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="m83 51 13 10-13 10" fill="none" stroke="url(#warp)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

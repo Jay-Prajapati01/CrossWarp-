@@ -1,6 +1,6 @@
 # CrossWarp desktop application
 
-The app is a Tauri 2 + React/Vite desktop interface backed by the Windows Rust command host. It currently implements LAN discovery, mutually approved first pairing, trusted reconnect, local and remote Shared Workspace UI, transfer progress, capability status, and an opt-in local-only Raw Input diagnostic.
+The app is a Tauri 2 + React/Vite desktop interface backed by the Windows Rust command host. It currently implements LAN discovery, mutually approved first pairing, trusted reconnect, local and remote Shared Workspace UI, transfer progress, capability status, and an opt-in local-only Raw Input diagnostic. The product mark is the scalable `public/crosswarp-logo.svg` asset.
 
 This is a development build. Only the file service is connected to the desktop session. Pairing and file workflows are not yet physically accepted on two PCs; the diagnostic does not share input. No extended display or live window portal is delivered.
 

@@ -6,6 +6,8 @@
 
 The documentation handbook is indexed at [docs/README.md](README.md). The current guide set covers user setup, feature status, architecture, protocol, security/privacy, builds, automated and physical acceptance, compatibility, installation/release, troubleshooting, engineering history, and four design decisions. This documentation increment does not change implementation or acceptance results.
 
+The desktop brand asset was refined to an outlined two-display vector mark with a continuous transfer path. The Vite production bundle and frontend checks are the relevant validation; the full Tauri package attempt could not replace the running executable because Windows reported access denied while that app remained open. This branding change does not affect capability completion.
+
 **Phase:** Phase 0 hardware proofs remain blocked; Phase 1 agent and desktop foundations are in progress. Product scope is now broad Windows-version compatibility, including mixed-version pairs; Windows 10/11 are only the first hardware fixtures.
 
 ## Verified in this workspace

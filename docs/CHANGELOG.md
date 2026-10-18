@@ -4,6 +4,10 @@ This log summarizes repository milestones for maintainers. Git history is the so
 
 ## Current development line
 
+### Branding refinement (current working increment)
+
+Replaced the small-size filled-screen icon with a cleaner outlined dual-display mark and a continuous teal transfer path. This is a vector asset used by the desktop rail; it does not change feature status. Frontend validation is recorded with the increment.
+
 ### `9076537` — Local input diagnostic and lifecycle fix
 
 Added explicit-consent local Raw Input event-kind counters, with event data held briefly in memory and never sent to the peer or persisted. Corrected native message-queue startup ordering and capability aggregation. This is a local diagnostic only; no cross-PC input routing.
