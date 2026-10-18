@@ -10,8 +10,9 @@ use tokio::sync::{mpsc, oneshot};
 use unified_workspace_agent::protocol::{Capability, CapabilityState, DeviceId, SessionId};
 use unified_workspace_agent::windows_input::{InputCapture, InputKind};
 use unified_workspace_agent::windows_capture::{
-    encode_preview_jpeg, enumerate_windows, CapturedFrame, WindowCapture,
+    encode_display_jpeg, encode_preview_jpeg, enumerate_windows, CapturedFrame, WindowCapture,
 };
+use unified_workspace_agent::windows_display::IddDisplayClient;
 use unified_workspace_agent::{
     accept_pair_or_trusted_over_stream, connect_trusted_over_stream, pair_over_stream,
     send_media_frame, spawn_file_rpc, spawn_session_transport, DeviceIdentity,
@@ -73,14 +74,18 @@ struct InputDiagnosticReport {
 struct PairingInner {
     pending: Mutex<HashMap<String, oneshot::Sender<bool>>>,
     pending_window_shares: Mutex<HashMap<String, (String, oneshot::Sender<bool>)>>,
+    pending_display_shares: Mutex<HashMap<String, (String, u64, oneshot::Sender<bool>)>>,
+    pending_display_authorizations: Mutex<HashMap<String, (String, u64, oneshot::Sender<bool>)>>,
     trusted: Mutex<Vec<String>>,
     active: Mutex<HashSet<String>>,
     clients: Mutex<HashMap<String, FileRpcClient>>,
     services: Mutex<HashMap<String, SessionChannels>>,
     session_tasks: Mutex<HashMap<String, tokio::task::AbortHandle>>,
     window_frames: Mutex<HashMap<String, RemoteWindowFrame>>,
+    display_frames: Mutex<HashMap<String, RemoteDisplayFrame>>,
     media_contexts: Mutex<HashMap<String, (SessionId, DeviceId)>>,
     window_share_stops: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    display_share_stops: Mutex<HashMap<String, Arc<AtomicBool>>>,
     window_share_targets: Mutex<HashMap<String, (u64, u64)>>,
     window_control_streams: Mutex<HashMap<String, (u64, u64)>>,
     window_portal_held: Mutex<HashMap<String, Vec<WindowPortalInput>>>,
@@ -139,6 +144,15 @@ struct WindowShareRequestView {
 }
 
 #[derive(Clone, Serialize)]
+struct DisplayShareRequestView {
+    request_id: String,
+    peer_device_id: String,
+    stream_id: u64,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Clone, Serialize)]
 struct RemoteWindowFrame {
     peer_device_id: String,
     stream_id: u64,
@@ -148,6 +162,24 @@ struct RemoteWindowFrame {
     width: u32,
     height: u32,
     jpeg_base64: String,
+}
+
+#[derive(Clone, Serialize)]
+struct RemoteDisplayFrame {
+    peer_device_id: String,
+    stream_id: u64,
+    sequence: u64,
+    timestamp_100ns: u64,
+    received_at_unix_ms: u64,
+    width: u32,
+    height: u32,
+    jpeg_base64: String,
+}
+
+struct EncodedDisplayFrame {
+    width: u32,
+    height: u32,
+    payload: Vec<u8>,
 }
 
 #[derive(Clone, Serialize)]
@@ -161,6 +193,25 @@ struct CapturableWindowView {
 enum WindowControlAction {
     Stop,
     Input { source_stream_id: u64, event: WindowPortalInput },
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+enum DisplayControlAction {
+    Request {
+        request_id: String,
+        stream_id: u64,
+        max_width: u32,
+        max_height: u32,
+    },
+    Decision {
+        request_id: String,
+        stream_id: u64,
+        approved: bool,
+    },
+    Stop {
+        stream_id: u64,
+    },
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -193,6 +244,7 @@ impl WindowPortalInput {
 static NEXT_PAIRING_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 static NEXT_DOWNLOAD_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 static NEXT_WINDOW_SHARE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static NEXT_DISPLAY_SHARE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 static NEXT_VIDEO_STREAM_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 static NEXT_WINDOW_CONTROL_STREAM_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX / 2);
 
@@ -650,6 +702,54 @@ fn respond_to_window_share(
 }
 
 #[tauri::command]
+async fn respond_to_display_share(
+    request_id: String,
+    approved: bool,
+    pairing: tauri::State<'_, PairingState>,
+) -> Result<(), String> {
+    let (peer_device_id, stream_id, sender) = pairing
+        .0
+        .pending_display_shares
+        .lock()
+        .map_err(|_| "display-share request state is unavailable")?
+        .remove(&request_id)
+        .ok_or("display-share request expired")?;
+    let (session_id, _) = pairing.0.media_contexts.lock()
+        .map_err(|_| "display session is unavailable")?
+        .get(&peer_device_id)
+        .cloned()
+        .ok_or("display request peer is no longer connected")?;
+    let channel = pairing.0.services.lock()
+        .map_err(|_| "display service is unavailable")?
+        .get(&peer_device_id)
+        .map(|services| services.display_video.sender.clone())
+        .ok_or("display request lane is no longer available")?;
+    let payload = serde_json::to_vec(&DisplayControlAction::Decision {
+        request_id,
+        stream_id,
+        approved,
+    }).map_err(|error| error.to_string())?;
+    let frame = MediaFrame {
+        session_id,
+        target: DeviceId(peer_device_id),
+        stream_id,
+        sequence: 1,
+        timestamp_100ns: 1,
+        width: 1,
+        height: 1,
+        codec: VideoCodec::DisplayControl,
+        key_frame: true,
+        payload,
+    };
+    send_media_frame(&channel, MediaLane::Display, &frame)
+        .await
+        .map_err(|error| error.to_string())?;
+    sender
+        .send(approved)
+        .map_err(|_| "display-share request ended".to_owned())
+}
+
+#[tauri::command]
 fn get_remote_window_frame(
     peer_device_id: String,
     pairing: tauri::State<'_, PairingState>,
@@ -660,6 +760,23 @@ fn get_remote_window_frame(
         .lock()
         .map(|frames| frames.get(&peer_device_id).cloned())
         .map_err(|_| "window-frame state is unavailable".to_owned())
+}
+
+#[tauri::command]
+fn get_remote_display_frame(
+    peer_device_id: String,
+    pairing: tauri::State<'_, PairingState>,
+) -> Result<Option<RemoteDisplayFrame>, String> {
+    let mut frames = pairing
+        .0
+        .display_frames
+        .lock()
+        .map_err(|_| "display-frame state is unavailable".to_owned())?;
+    if frames.get(&peer_device_id).is_some_and(|frame|
+        frame.received_at_unix_ms.saturating_add(1500) < now_unix_ms()) {
+        frames.remove(&peer_device_id);
+    }
+    Ok(frames.get(&peer_device_id).cloned())
 }
 
 #[tauri::command]
@@ -848,6 +965,193 @@ fn stop_window_share(
     if let Some(stop) = stop {
         stop.store(true, Ordering::Release);
     }
+    Ok(())
+}
+
+#[tauri::command]
+async fn start_display_share(
+    app: tauri::AppHandle,
+    peer_device_id: String,
+    pairing: tauri::State<'_, PairingState>,
+) -> Result<(), String> {
+    use tauri::Emitter;
+
+    let (session_id, target) = pairing
+        .0
+        .media_contexts
+        .lock()
+        .map_err(|_| "session media state is unavailable")?
+        .get(&peer_device_id)
+        .cloned()
+        .ok_or("peer has no active authenticated media session")?;
+    let channel = pairing
+        .0
+        .services
+        .lock()
+        .map_err(|_| "session service state is unavailable")?
+        .get(&peer_device_id)
+        .map(|services| services.display_video.sender.clone())
+        .ok_or("peer display-video lane is unavailable")?;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    {
+        let mut active = pairing.0.display_share_stops.lock()
+            .map_err(|_| "display-share state is unavailable")?;
+        if active.get(&peer_device_id).is_some_and(|current| !current.load(Ordering::Acquire)) {
+            return Err("stop the current extended-display stream before starting another".into());
+        }
+        active.insert(peer_device_id.clone(), stop.clone());
+    }
+
+    let stream_id = NEXT_DISPLAY_SHARE_ID.fetch_add(1, Ordering::Relaxed);
+    let request_id = format!("{}-{}", std::process::id(), stream_id);
+    let (authorize, authorization) = oneshot::channel();
+    pairing.0.pending_display_authorizations.lock()
+        .map_err(|_| "display authorization state is unavailable")?
+        .insert(request_id.clone(), (peer_device_id.clone(), stream_id, authorize));
+    let request = MediaFrame {
+        session_id,
+        target: target.clone(),
+        stream_id,
+        sequence: 1,
+        timestamp_100ns: 1,
+        width: 1,
+        height: 1,
+        codec: VideoCodec::DisplayControl,
+        key_frame: true,
+        payload: serde_json::to_vec(&DisplayControlAction::Request {
+            request_id: request_id.clone(), stream_id, max_width: 1920, max_height: 1080,
+        }).map_err(|error| error.to_string())?,
+    };
+    if let Err(error) = send_media_frame(&channel, MediaLane::Display, &request).await {
+        if let Ok(mut pending) = pairing.0.pending_display_authorizations.lock() { pending.remove(&request_id); }
+        if let Ok(mut active) = pairing.0.display_share_stops.lock() { active.remove(&peer_device_id); }
+        return Err(error.to_string());
+    }
+    let approved = tokio::time::timeout(std::time::Duration::from_secs(120), authorization)
+        .await.ok().and_then(Result::ok).unwrap_or(false);
+    if !approved {
+        if let Ok(mut pending) = pairing.0.pending_display_authorizations.lock() { pending.remove(&request_id); }
+        if let Ok(mut active) = pairing.0.display_share_stops.lock() { active.remove(&peer_device_id); }
+        return Err("the receiving PC did not approve extended-display capture".into());
+    }
+
+    let (frame_tx, mut frame_rx) = mpsc::channel::<Result<EncodedDisplayFrame, String>>(1);
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let worker_stop = stop.clone();
+    let capture_worker = tokio::task::spawn_blocking(move || {
+        let mut capture = match IddDisplayClient::open() {
+            Ok(capture) => capture,
+            Err(error) => {
+                let message = error.to_string();
+                let _ = ready_tx.send(Err(message.clone()));
+                let _ = frame_tx.blocking_send(Err(message));
+                return;
+            }
+        };
+        if let Err(error) = capture.set_capture(true) {
+            let message = error.to_string();
+            let _ = ready_tx.send(Err(message.clone()));
+            let _ = frame_tx.blocking_send(Err(message));
+            return;
+        }
+        let _ = ready_tx.send(Ok(()));
+        while !worker_stop.load(Ordering::Acquire) {
+            match capture.read_latest() {
+                Ok(Some(frame)) => {
+                    match encode_display_jpeg(frame.info.width, frame.info.height, frame.bgra) {
+                        Ok((width, height, payload)) => {
+                            let _ = frame_tx.try_send(Ok(EncodedDisplayFrame { width, height, payload }));
+                        }
+                        Err(error) => {
+                            let _ = frame_tx.blocking_send(Err(error.to_string()));
+                            break;
+                        }
+                    }
+                }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(3)),
+                Err(error) => {
+                    let _ = frame_tx.blocking_send(Err(error.to_string()));
+                    break;
+                }
+            }
+        }
+        let _ = capture.set_capture(false);
+    });
+
+    let task_stop = stop.clone();
+    let task_pairing = pairing.0.clone();
+    let task_peer = peer_device_id.clone();
+    let task_app = app.clone();
+    tokio::spawn(async move {
+        let started = std::time::Instant::now();
+        let mut sequence = 1u64;
+        while let Some(result) = frame_rx.recv().await {
+            let encoded = match result {
+                Ok(frame) => frame,
+                Err(error) => {
+                    let _ = task_app.emit("display-stream-error", error);
+                    break;
+                }
+            };
+            sequence = sequence.saturating_add(1);
+            let frame = MediaFrame {
+                session_id,
+                target: target.clone(),
+                stream_id,
+                sequence,
+                timestamp_100ns: (started.elapsed().as_nanos() / 100).max(2).min(u128::from(u64::MAX)) as u64,
+                width: encoded.width,
+                height: encoded.height,
+                codec: VideoCodec::Jpeg,
+                key_frame: true,
+                payload: encoded.payload,
+            };
+            if let Err(error) = send_media_frame(&channel, MediaLane::Display, &frame).await {
+                if matches!(error, MediaSessionError::Transport(SessionTransportError::QueueFull)) {
+                    continue;
+                }
+                let _ = task_app.emit("display-stream-error", error.to_string());
+                break;
+            }
+        }
+        task_stop.store(true, Ordering::Release);
+        let _ = capture_worker.await;
+        if let Ok(mut active) = task_pairing.display_share_stops.lock() {
+            if active.get(&task_peer).is_some_and(|current| Arc::ptr_eq(current, &task_stop)) {
+                active.remove(&task_peer);
+            }
+        }
+        let _ = task_app.emit("display-share-ended", &task_peer);
+    });
+
+    match tokio::time::timeout(std::time::Duration::from_secs(10), ready_rx).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(error))) => {
+            stop.store(true, Ordering::Release);
+            if let Ok(mut active) = pairing.0.display_share_stops.lock() { active.remove(&peer_device_id); }
+            Err(error)
+        }
+        Ok(Err(_)) => {
+            stop.store(true, Ordering::Release);
+            Err("IDD display capture worker ended during initialization".into())
+        }
+        Err(_) => {
+            stop.store(true, Ordering::Release);
+            Err("IDD display capture did not initialize within 10 seconds".into())
+        }
+    }
+}
+
+#[tauri::command]
+fn stop_display_share(
+    peer_device_id: String,
+    pairing: tauri::State<'_, PairingState>,
+) -> Result<(), String> {
+    let stop = pairing.0.display_share_stops.lock()
+        .map_err(|_| "display-share state is unavailable")?
+        .remove(&peer_device_id);
+    if let Some(stop) = stop { stop.store(true, Ordering::Release); }
     Ok(())
 }
 
@@ -1202,11 +1506,12 @@ async fn activate_session(
         workspace,
     );
     let window_frames = services.window_video.receiver.clone();
+    let display_frames = services.display_video.receiver.clone();
     let window_pairing = pairing.clone();
     let window_app = completion_app.clone();
     let window_peer = peer_for_task.clone();
     let mut media_receiver =
-        MediaSessionReceiver::new(session_id, local_device_id, MediaLane::Window);
+        MediaSessionReceiver::new(session_id, local_device_id.clone(), MediaLane::Window);
     let window_video_task = tokio::spawn(async move {
         let mut approved_stream = None;
         let mut denied_stream = None;
@@ -1310,10 +1615,75 @@ async fn activate_session(
         }
         let _ = window_app.emit("window-share-ended", &window_peer);
     });
+    let display_pairing = pairing.clone();
+    let display_app = completion_app.clone();
+    let display_peer = peer_for_task.clone();
+    let mut display_receiver = MediaSessionReceiver::new(session_id, local_device_id, MediaLane::Display);
+    let display_video_task = tokio::spawn(async move {
+        let mut approved_stream = None;
+        while let Some(bytes) = display_frames.recv().await {
+            let frame = match display_receiver.accept(&bytes) {
+                Ok(frame) => frame,
+                Err(error) => { let _ = display_app.emit("display-stream-error", error.to_string()); break; }
+            };
+            if frame.codec == VideoCodec::DisplayControl {
+                let action = match serde_json::from_slice::<DisplayControlAction>(&frame.payload) {
+                    Ok(action) => action,
+                    Err(error) => { let _ = display_app.emit("display-stream-error", error.to_string()); break; }
+                };
+                match action {
+                    DisplayControlAction::Request { request_id, stream_id, max_width, max_height } => {
+                        let approved = request_display_share_approval(
+                            display_app.clone(), display_pairing.clone(), request_id,
+                            display_peer.clone(), stream_id, max_width, max_height,
+                        ).await;
+                        approved_stream = approved.then_some(stream_id);
+                    }
+                    DisplayControlAction::Decision { request_id, stream_id, approved } => {
+                        let pending = display_pairing.pending_display_authorizations.lock().ok()
+                            .and_then(|mut map| map.remove(&request_id));
+                        if let Some((expected_peer, expected_stream, sender)) = pending {
+                            let _ = sender.send(expected_peer == display_peer && expected_stream == stream_id && approved);
+                        }
+                    }
+                    DisplayControlAction::Stop { stream_id } => {
+                        if approved_stream == Some(stream_id) { approved_stream = None; }
+                        if let Ok(mut stored) = display_pairing.display_frames.lock() { stored.remove(&display_peer); }
+                        let _ = display_app.emit("display-share-ended", &display_peer);
+                    }
+                }
+                continue;
+            }
+            if frame.codec != VideoCodec::Jpeg || approved_stream != Some(frame.stream_id) {
+                let _ = display_app.emit("display-stream-error", "extended-display pixels arrived without current receiver approval");
+                continue;
+            }
+            if frame.width > 3840 || frame.height > 2160 {
+                let _ = display_app.emit("display-stream-error", "peer display frame exceeds the configured 3840×2160 limit");
+                break;
+            }
+            let latest = RemoteDisplayFrame {
+                peer_device_id: display_peer.clone(),
+                stream_id: frame.stream_id,
+                sequence: frame.sequence,
+                timestamp_100ns: frame.timestamp_100ns,
+                received_at_unix_ms: now_unix_ms(),
+                width: frame.width,
+                height: frame.height,
+                jpeg_base64: base64::engine::general_purpose::STANDARD.encode(frame.payload),
+            };
+            if let Ok(mut stored) = display_pairing.display_frames.lock() {
+                stored.insert(display_peer.clone(), latest);
+            }
+        }
+        if let Ok(mut stored) = display_pairing.display_frames.lock() { stored.remove(&display_peer); }
+        let _ = display_app.emit("display-share-ended", &display_peer);
+    });
     let mut transport_task = transport_task;
     let abort_children = AbortChildrenOnDrop(vec![
         file_task.abort_handle(),
         window_video_task.abort_handle(),
+        display_video_task.abort_handle(),
         transport_task.abort_handle(),
     ]);
     let task = tokio::spawn(async move {
@@ -1347,6 +1717,9 @@ async fn activate_session(
         if let Ok(mut frames) = session_pairing.window_frames.lock() {
             frames.remove(&peer_for_task);
         }
+        if let Ok(mut frames) = session_pairing.display_frames.lock() {
+            frames.remove(&peer_for_task);
+        }
         if let Ok(mut contexts) = session_pairing.media_contexts.lock() {
             contexts.remove(&peer_for_task);
         }
@@ -1356,7 +1729,12 @@ async fn activate_session(
                 stop.store(true, Ordering::Release);
             }
         }
+        if let Ok(mut shares) = session_pairing.display_share_stops.lock() {
+            if let Some(stop) = shares.remove(&peer_for_task) { stop.store(true, Ordering::Release); }
+        }
         reject_pending_window_share_requests(&session_pairing, &peer_for_task);
+        reject_pending_display_share_requests(&session_pairing, &peer_for_task);
+        reject_pending_display_authorizations(&session_pairing, &peer_for_task);
         if let Ok(mut tasks) = session_pairing.session_tasks.lock() {
             tasks.remove(&peer_for_task);
         }
@@ -1411,6 +1789,37 @@ async fn request_window_share_approval(
     approved
 }
 
+async fn request_display_share_approval(
+    app: tauri::AppHandle,
+    pairing: Arc<PairingInner>,
+    request_id: String,
+    peer_device_id: String,
+    stream_id: u64,
+    width: u32,
+    height: u32,
+) -> bool {
+    use tauri::Emitter;
+
+    let (approve, result) = oneshot::channel();
+    if let Ok(mut pending) = pairing.pending_display_shares.lock() {
+        pending.insert(request_id.clone(), (peer_device_id.clone(), stream_id, approve));
+    } else {
+        return false;
+    }
+    let request = DisplayShareRequestView { request_id: request_id.clone(), peer_device_id: peer_device_id.clone(), stream_id, width, height };
+    if app.emit("display-share-request", request).is_err() {
+        if let Ok(mut pending) = pairing.pending_display_shares.lock() { pending.remove(&request_id); }
+        return false;
+    }
+    let approved = tokio::time::timeout(std::time::Duration::from_secs(120), result)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or(false);
+    if let Ok(mut pending) = pairing.pending_display_shares.lock() { pending.remove(&request_id); }
+    approved
+}
+
 fn reject_pending_window_share_requests(pairing: &PairingInner, peer_device_id: &str) {
     let Ok(mut pending) = pairing.pending_window_shares.lock() else {
         return;
@@ -1422,6 +1831,33 @@ fn reject_pending_window_share_requests(pairing: &PairingInner, peer_device_id: 
         .collect::<Vec<_>>();
     for request_id in requests {
         if let Some((_, sender)) = pending.remove(&request_id) {
+            let _ = sender.send(false);
+        }
+    }
+}
+
+fn reject_pending_display_share_requests(pairing: &PairingInner, peer_device_id: &str) {
+    let Ok(mut pending) = pairing.pending_display_shares.lock() else { return; };
+    let requests = pending.iter()
+        .filter(|(_, (peer, _, _))| peer == peer_device_id)
+        .map(|(request_id, _)| request_id.clone())
+        .collect::<Vec<_>>();
+    for request_id in requests {
+        if let Some((_, _, sender)) = pending.remove(&request_id) { let _ = sender.send(false); }
+    }
+}
+
+fn reject_pending_display_authorizations(pairing: &PairingInner, peer_device_id: &str) {
+    let Ok(mut pending) = pairing.pending_display_authorizations.lock() else {
+        return;
+    };
+    let requests = pending
+        .iter()
+        .filter(|(_, (peer, _, _))| peer == peer_device_id)
+        .map(|(request_id, _)| request_id.clone())
+        .collect::<Vec<_>>();
+    for request_id in requests {
+        if let Some((_, _, sender)) = pending.remove(&request_id) {
             let _ = sender.send(false);
         }
     }
@@ -1912,10 +2348,14 @@ fn main() {
             list_trusted_peers,
             respond_to_pairing,
             respond_to_window_share,
+            respond_to_display_share,
             get_remote_window_frame,
+            get_remote_display_frame,
             list_capturable_windows,
             start_window_share,
             stop_window_share,
+            start_display_share,
+            stop_display_share,
             revoke_remote_window_preview,
             send_window_portal_input,
             open_native_window_portal,
@@ -2062,6 +2502,26 @@ mod tests {
             serde_json::json!({"action": "close_source_application"})
         )
         .is_err());
+    }
+
+    #[test]
+    fn display_control_uses_explicit_request_decision_and_stop_actions() {
+        let request = DisplayControlAction::Request {
+            request_id: "req-1".into(),
+            stream_id: 7,
+            max_width: 1920,
+            max_height: 1080,
+        };
+        let value = serde_json::to_value(request).unwrap();
+        assert_eq!(value["action"], "request");
+        assert_eq!(value["stream_id"], 7);
+        assert_eq!(value["max_width"], 1920);
+        assert!(serde_json::from_value::<DisplayControlAction>(serde_json::json!({
+            "action": "decision", "request_id": "req-1", "stream_id": 7, "approved": true
+        })).is_ok());
+        assert!(serde_json::from_value::<DisplayControlAction>(serde_json::json!({
+            "action": "start_capture_without_consent", "stream_id": 7
+        })).is_err());
     }
 
     #[test]

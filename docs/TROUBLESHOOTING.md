@@ -4,11 +4,11 @@ This guide covers the current development build. For privacy-sensitive diagnosti
 
 ## Device not discovered
 
-Confirm both devices run compatible protocol-v6 builds and share a trusted LAN that permits multicast DNS and the advertised TCP connection. Guest Wi-Fi, client isolation, firewall policy, VPN routing, or blocked multicast can prevent discovery or connection. The app uses discovery addresses only as hints; pairing authentication is separate. Do not hard-code lab fixture addresses as a workaround. Record both app versions, network type, firewall profile and visible error.
+Confirm both devices run the same protocol-v7 build and share a trusted LAN that permits multicast DNS and the advertised TCP connection. Guest Wi-Fi, client isolation, firewall policy, VPN routing, or blocked multicast can prevent discovery or connection. The app uses discovery addresses only as hints; pairing authentication is separate. Do not hard-code lab fixture addresses as a workaround. Record both app versions, network type, firewall profile and visible error.
 
 ## Pairing or reconnect fails
 
-First-time pairing requires matching short codes and approval on both endpoints. Reject unexpected peers or mismatched codes. Reconnect requires a saved key identity; an identity-store or peer-store error fails closed. Ensure both devices run protocol v6. Do not delete protected identity data to bypass trust failures; use an explicit revoke/reset workflow when available.
+First-time pairing requires matching short codes and approval on both endpoints. Reject unexpected peers or mismatched codes. Reconnect requires a saved key identity; an identity-store or peer-store error fails closed. Ensure both devices run protocol v7. Do not delete protected identity data to bypass trust failures; use an explicit revoke/reset workflow when available.
 
 ## Shared Workspace unavailable or file transfer fails
 

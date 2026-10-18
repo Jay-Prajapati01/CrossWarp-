@@ -86,6 +86,37 @@ fn main() -> Result<(), Box<dyn Error>> {
         "cargo:rerun-if-changed={}",
         capture_source.join("window_capture.cpp").display()
     );
+
+    let idd_client_source = repository_root.join("native/windows-bridge/idd-client");
+    let idd_client_output = PathBuf::from(env::var("OUT_DIR")?).join("idd-client-bridge");
+    run(Command::new("cmake")
+        .arg("-S")
+        .arg(&idd_client_source)
+        .arg("-B")
+        .arg(&idd_client_output)
+        .arg("-G")
+        .arg("Visual Studio 17 2022")
+        .arg("-A")
+        .arg(architecture))?;
+    run(Command::new("cmake")
+        .arg("--build")
+        .arg(&idd_client_output)
+        .arg("--config")
+        .arg("Release")
+        .arg("--target")
+        .arg("crosswarp-idd-client")
+        .arg("--parallel")
+        .arg("4"))?;
+    println!(
+        "cargo:rustc-link-search=native={}",
+        idd_client_output.join("Release").display()
+    );
+    println!("cargo:rustc-link-lib=static=crosswarp-idd-client");
+    println!("cargo:rustc-link-lib=setupapi");
+    println!(
+        "cargo:rerun-if-changed={}",
+        idd_client_source.join("idd_client.cpp").display()
+    );
     Ok(())
 }
 

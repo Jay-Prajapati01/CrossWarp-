@@ -21,6 +21,8 @@ pub mod trust;
 #[cfg(windows)]
 pub mod windows_capture;
 #[cfg(windows)]
+pub mod windows_display;
+#[cfg(windows)]
 pub mod windows_input;
 
 pub use file_rpc::{

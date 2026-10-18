@@ -95,52 +95,78 @@ pub struct WindowCapture {
 pub fn encode_preview_jpeg(
     frame: &CapturedFrame,
 ) -> Result<(u32, u32, Vec<u8>), WindowCaptureError> {
+    encode_bgra_jpeg(frame.width, frame.height, &frame.bgra, 1280, 720)
+}
+
+/// Encodes an IDD frame while preserving 1080p output when the available media
+/// payload budget permits it. Resolution is reduced only as needed to fit the
+/// bounded transport frame.
+pub fn encode_display_jpeg(
+    width: u32,
+    height: u32,
+    bgra: &[u8],
+) -> Result<(u32, u32, Vec<u8>), WindowCaptureError> {
+    encode_bgra_jpeg(width, height, bgra, 1920, 1080)
+}
+
+fn encode_bgra_jpeg(
+    frame_width: u32,
+    frame_height: u32,
+    bgra: &[u8],
+    max_width: u32,
+    max_height: u32,
+) -> Result<(u32, u32, Vec<u8>), WindowCaptureError> {
     use image::imageops::FilterType;
     use image::{ImageBuffer, Rgba};
     use std::io::Cursor;
 
-    if frame.width == 0 || frame.height == 0 {
+    if frame_width == 0 || frame_height == 0 || frame_width > 3840 || frame_height > 2160 {
         return Err(WindowCaptureError(
-            "capture returned empty dimensions".into(),
+            "capture returned empty or excessive dimensions".into(),
         ));
     }
-    let valid_length = (frame.width as usize)
-        .checked_mul(frame.height as usize)
+    let valid_length = (frame_width as usize)
+        .checked_mul(frame_height as usize)
         .and_then(|pixels| pixels.checked_mul(4))
-        .is_some_and(|bytes| bytes == frame.bgra.len());
+        .is_some_and(|bytes| bytes == bgra.len());
     if !valid_length {
         return Err(WindowCaptureError(
             "capture returned inconsistent BGRA data".into(),
         ));
     }
-    let mut rgba = frame.bgra.clone();
+    let mut rgba = bgra.to_vec();
     for pixel in rgba.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
-    let source = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(frame.width, frame.height, rgba)
+    let source = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(frame_width, frame_height, rgba)
         .ok_or_else(|| WindowCaptureError("capture pixels could not be decoded".into()))?;
-    let scale = (1280.0f64 / f64::from(frame.width))
-        .min(720.0f64 / f64::from(frame.height))
+    let scale = (f64::from(max_width) / f64::from(frame_width))
+        .min(f64::from(max_height) / f64::from(frame_height))
         .min(1.0);
-    let width = (f64::from(frame.width) * scale).round().max(1.0) as u32;
-    let height = (f64::from(frame.height) * scale).round().max(1.0) as u32;
-    let resized = if width == frame.width && height == frame.height {
+    let mut width = (f64::from(frame_width) * scale).round().max(1.0) as u32;
+    let mut height = (f64::from(frame_height) * scale).round().max(1.0) as u32;
+    let resized = if width == frame_width && height == frame_height {
         source
     } else {
         image::imageops::resize(&source, width, height, FilterType::Triangle)
     };
-    let rgb = image::DynamicImage::ImageRgba8(resized).into_rgb8();
+    let mut rgb = image::DynamicImage::ImageRgba8(resized).into_rgb8();
     let mut last_size = 0usize;
-    for quality in [78, 66, 54, 42] {
-        let mut bytes = Cursor::new(Vec::new());
-        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, quality)
-            .encode(&rgb, width, height, image::ExtendedColorType::Rgb8)
-            .map_err(|error| WindowCaptureError(format!("JPEG encoding failed: {error}")))?;
-        last_size = bytes.get_ref().len();
-        let payload = bytes.into_inner();
-        if payload.len() <= crate::media_session::MAX_MEDIA_PAYLOAD_BYTES {
-            return Ok((width, height, payload));
+    for _ in 0..5 {
+        for quality in [78, 66, 54, 42, 30] {
+            let mut bytes = Cursor::new(Vec::new());
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, quality)
+                .encode(&rgb, width, height, image::ExtendedColorType::Rgb8)
+                .map_err(|error| WindowCaptureError(format!("JPEG encoding failed: {error}")))?;
+            last_size = bytes.get_ref().len();
+            let payload = bytes.into_inner();
+            if payload.len() <= crate::media_session::MAX_MEDIA_PAYLOAD_BYTES {
+                return Ok((width, height, payload));
+            }
         }
+        width = (width / 2).max(1);
+        height = (height / 2).max(1);
+        rgb = image::imageops::resize(&rgb, width, height, FilterType::Triangle);
     }
     Err(WindowCaptureError(format!(
         "JPEG frame remains too large after downscaling and quality reduction ({last_size} bytes)"
@@ -292,6 +318,18 @@ mod tests {
         };
         let (preview_width, preview_height, jpeg) = encode_preview_jpeg(&frame).unwrap();
         assert_eq!((preview_width, preview_height), (1280, 720));
+        assert!(jpeg.len() <= crate::media_session::MAX_MEDIA_PAYLOAD_BYTES);
+    }
+
+    #[test]
+    fn display_encoder_preserves_full_hd_when_payload_budget_allows() {
+        let width = 1920;
+        let height = 1080;
+        let bgra = vec![0; width as usize * height as usize * 4];
+        let (encoded_width, encoded_height, jpeg) =
+            encode_display_jpeg(width, height, &bgra).unwrap();
+        assert_eq!((encoded_width, encoded_height), (width, height));
+        assert!(jpeg.starts_with(&[0xff, 0xd8]));
         assert!(jpeg.len() <= crate::media_session::MAX_MEDIA_PAYLOAD_BYTES);
     }
 }

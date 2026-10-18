@@ -5,7 +5,7 @@
 
 ## Before you start
 
-- Use the same CrossWarp build on each Windows PC. The current protocol v6 build is not compatible with older wire-protocol builds.
+- Use the same CrossWarp build on each Windows PC. Current source uses protocol v7 and is not wire-compatible with older builds. The matching v7 installer is not yet verified on the second PC.
 - For the LAN path, place both PCs on a trusted local network where multicast discovery and the advertised TCP connection are allowed. IP addresses and TCP ports are discovered; do not hard-code the sample lab addresses.
 - Pair only devices you control. Compare the six-digit code on both screens before approving.
 - Keep this version's claims in mind: the Shared Workspace path has code and tests but has not been proved between the two physical PCs; shared input is not implemented; extended display is not working; live interactive window portals are not implemented.

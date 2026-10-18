@@ -26,6 +26,13 @@ struct DisplayFrameInfo {
     std::uint64_t captured_at_millis{};
 };
 
+enum class FrameCopyResult {
+    Unavailable,
+    NoNewFrame,
+    BufferTooSmall,
+    Copied,
+};
+
 // Thread-safe, single-frame CPU snapshot used by the IDD swapchain worker.
 // It does not expose the pixels outside the UMDF driver host.
 class DisplayFrameBuffer {
@@ -110,6 +117,30 @@ public:
             return true;
         } catch (...) {
             return false;
+        }
+    }
+
+    FrameCopyResult copy_latest(std::uint64_t after_sequence, DisplayFrameInfo& info,
+                                void* destination, std::size_t capacity) const noexcept {
+        if (!enabled_.load(std::memory_order_acquire)) {
+            return FrameCopyResult::Unavailable;
+        }
+        try {
+            std::lock_guard<std::mutex> guard(mutex_);
+            if (!enabled_.load(std::memory_order_acquire) || !ready_) {
+                return FrameCopyResult::Unavailable;
+            }
+            info = info_;
+            if (info_.sequence <= after_sequence) {
+                return FrameCopyResult::NoNewFrame;
+            }
+            if (destination == nullptr || capacity < pixels_.size()) {
+                return FrameCopyResult::BufferTooSmall;
+            }
+            std::memcpy(destination, pixels_.data(), pixels_.size());
+            return FrameCopyResult::Copied;
+        } catch (...) {
+            return FrameCopyResult::Unavailable;
         }
     }
 

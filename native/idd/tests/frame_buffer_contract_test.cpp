@@ -108,6 +108,28 @@ void disabling_capture_scrubs_and_hides_the_last_frame() {
     buffer.set_enabled(true);
     check(!buffer.snapshot(info, copy), "reenabling does not expose a stale frame");
 }
+
+void bounded_latest_frame_reads_support_a_user_session_consumer() {
+    crosswarp::idd::DisplayFrameBuffer buffer;
+    buffer.set_enabled(true);
+    const std::array<std::uint8_t, 16> source{
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+    };
+    crosswarp::idd::DisplayFrameInfo info{};
+    check(buffer.copy_latest(0, info, nullptr, 0) ==
+        crosswarp::idd::FrameCopyResult::Unavailable, "unavailable frame is not returned");
+    check(buffer.publish(2, 2, DXGI_FORMAT_B8G8R8A8_UNORM, source.data(), 8), "publish latest read frame");
+
+    std::array<std::uint8_t, 16> output{};
+    check(buffer.copy_latest(0, info, output.data(), output.size() - 1) ==
+        crosswarp::idd::FrameCopyResult::BufferTooSmall, "short output is rejected before copy");
+    check(info.width == 2 && info.height == 2 && info.sequence == 1, "short read returns frame metadata");
+    check(buffer.copy_latest(1, info, output.data(), output.size()) ==
+        crosswarp::idd::FrameCopyResult::NoNewFrame, "duplicate sequence is not copied");
+    check(buffer.copy_latest(0, info, output.data(), output.size()) ==
+        crosswarp::idd::FrameCopyResult::Copied, "newer frame is copied to caller buffer");
+    check(std::equal(output.begin(), output.end(), source.begin()), "caller buffer receives exact frame bytes");
+}
 } // namespace
 
 int main() {
@@ -115,6 +137,7 @@ int main() {
     copies_rows_without_source_padding();
     snapshots_never_observe_partially_written_frames();
     disabling_capture_scrubs_and_hides_the_last_frame();
+    bounded_latest_frame_reads_support_a_user_session_consumer();
     const int failure_count = failures.load(std::memory_order_relaxed);
     if (failure_count != 0) {
         std::cerr << failure_count << " frame-buffer contract check(s) failed\n";

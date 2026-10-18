@@ -129,6 +129,9 @@ EVT_WDF_DEVICE_D0_ENTRY IddSampleDeviceD0Entry;
 
 EVT_IDD_CX_ADAPTER_INIT_FINISHED IddSampleAdapterInitFinished;
 EVT_IDD_CX_ADAPTER_COMMIT_MODES IddSampleAdapterCommitModes;
+EVT_IDD_CX_DEVICE_IO_CONTROL IddSampleIoDeviceControl;
+EVT_WDF_DEVICE_FILE_CREATE IddSampleFileCreate;
+EVT_WDF_FILE_CLOSE IddSampleFileClose;
 
 EVT_IDD_CX_PARSE_MONITOR_DESCRIPTION IddSampleParseMonitorDescription;
 EVT_IDD_CX_MONITOR_GET_DEFAULT_DESCRIPTION_MODES IddSampleMonitorGetDefaultModes;
@@ -214,12 +217,17 @@ NTSTATUS IddSampleDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT pDeviceInit)
     PnpPowerCallbacks.EvtDeviceD0Entry = IddSampleDeviceD0Entry;
     WdfDeviceInitSetPnpPowerEventCallbacks(pDeviceInit, &PnpPowerCallbacks);
 
+    // Capture is revoked and its cached frame scrubbed when the sole user-mode
+    // client closes its device handle, including process exit or crash.
+    WDF_FILEOBJECT_CONFIG FileConfig;
+    WDF_FILEOBJECT_CONFIG_INIT(&FileConfig, IddSampleFileCreate, IddSampleFileClose, WDF_NO_EVENT_CALLBACK);
+    WdfDeviceInitSetFileObjectConfig(pDeviceInit, &FileConfig, WDF_NO_OBJECT_ATTRIBUTES);
+
     IDD_CX_CLIENT_CONFIG IddConfig;
     IDD_CX_CLIENT_CONFIG_INIT(&IddConfig);
 
-    // If the driver wishes to handle custom IoDeviceControl requests, it's necessary to use this callback since IddCx
-    // redirects IoDeviceControl requests to an internal queue. This sample does not need this.
-    // IddConfig.EvtIddCxDeviceIoControl = IddSampleIoDeviceControl;
+    // IddCx redirects custom user-session IOCTLs through this supported callback.
+    IddConfig.EvtIddCxDeviceIoControl = IddSampleIoDeviceControl;
 
     IddConfig.EvtIddCxAdapterInitFinished = IddSampleAdapterInitFinished;
 
@@ -255,13 +263,133 @@ NTSTATUS IddSampleDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT pDeviceInit)
         return Status;
     }
 
-    Status = IddCxDeviceInitialize(Device);
+    Status = STATUS_SUCCESS;
 
     // Create a new device context object and attach it to the WDF device object
     auto* pContext = WdfObjectGet_IndirectDeviceContextWrapper(Device);
     pContext->pContext = new IndirectDeviceContext(Device);
 
+    Status = WdfDeviceCreateDeviceInterface(Device, &GUID_DEVINTERFACE_CROSSWARP_IDD, nullptr);
+    if (!NT_SUCCESS(Status))
+    {
+        return Status;
+    }
+
+    Status = IddCxDeviceInitialize(Device);
+
     return Status;
+}
+
+_Use_decl_annotations_
+VOID IddSampleFileCreate(WDFDEVICE Device, WDFREQUEST Request, WDFFILEOBJECT FileObject)
+{
+    UNREFERENCED_PARAMETER(FileObject);
+    auto* pContext = WdfObjectGet_IndirectDeviceContextWrapper(Device);
+    if (!pContext || !pContext->pContext || !pContext->pContext->TryOpenUserClient())
+    {
+        WdfRequestComplete(Request, STATUS_SHARING_VIOLATION);
+        return;
+    }
+    WdfRequestComplete(Request, STATUS_SUCCESS);
+}
+
+_Use_decl_annotations_
+VOID IddSampleFileClose(WDFFILEOBJECT FileObject)
+{
+    const WDFDEVICE Device = WdfFileObjectGetDevice(FileObject);
+    auto* pContext = WdfObjectGet_IndirectDeviceContextWrapper(Device);
+    if (pContext && pContext->pContext)
+    {
+        pContext->pContext->CloseUserClient();
+    }
+}
+
+_Use_decl_annotations_
+VOID IddSampleIoDeviceControl(WDFDEVICE Device, WDFREQUEST Request,
+    size_t OutputBufferLength, size_t InputBufferLength, ULONG IoControlCode)
+{
+    NTSTATUS Status = STATUS_INVALID_DEVICE_REQUEST;
+    size_t Information = 0;
+    auto* pContext = WdfObjectGet_IndirectDeviceContextWrapper(Device);
+    if (!pContext || !pContext->pContext || WdfRequestGetRequestorMode(Request) != UserMode)
+    {
+        WdfRequestCompleteWithInformation(Request, STATUS_ACCESS_DENIED, Information);
+        return;
+    }
+
+    const auto FrameBuffer = pContext->pContext->GetFrameBuffer();
+    if (IoControlCode == IOCTL_CROSSWARP_IDD_SET_CAPTURE)
+    {
+        if (InputBufferLength != sizeof(ULONG) || OutputBufferLength != 0)
+        {
+            Status = STATUS_INVALID_PARAMETER;
+        }
+        else
+        {
+            PVOID InputBuffer = nullptr;
+            Status = WdfRequestRetrieveInputBuffer(Request, sizeof(ULONG), &InputBuffer, nullptr);
+            if (NT_SUCCESS(Status))
+            {
+                const ULONG Enable = *static_cast<const ULONG*>(InputBuffer);
+                if (Enable > 1)
+                {
+                    Status = STATUS_INVALID_PARAMETER;
+                }
+                else
+                {
+                    FrameBuffer->set_enabled(Enable == 1);
+                    Status = STATUS_SUCCESS;
+                }
+            }
+        }
+    }
+    else if (IoControlCode == IOCTL_CROSSWARP_IDD_GET_FRAME)
+    {
+        if (InputBufferLength != sizeof(CrossWarpIddFrameRequest) ||
+            OutputBufferLength < sizeof(crosswarp::idd::DisplayFrameInfo))
+        {
+            Status = STATUS_BUFFER_TOO_SMALL;
+        }
+        else
+        {
+            PVOID InputBuffer = nullptr;
+            PVOID OutputBuffer = nullptr;
+            Status = WdfRequestRetrieveInputBuffer(Request, sizeof(CrossWarpIddFrameRequest), &InputBuffer, nullptr);
+            if (NT_SUCCESS(Status))
+            {
+                Status = WdfRequestRetrieveOutputBuffer(Request,
+                    sizeof(crosswarp::idd::DisplayFrameInfo), &OutputBuffer, nullptr);
+            }
+            if (NT_SUCCESS(Status))
+            {
+                const auto* FrameRequest = static_cast<const CrossWarpIddFrameRequest*>(InputBuffer);
+                auto* FrameInfo = static_cast<crosswarp::idd::DisplayFrameInfo*>(OutputBuffer);
+                auto* Pixels = static_cast<BYTE*>(OutputBuffer) + sizeof(*FrameInfo);
+                const size_t PixelCapacity = OutputBufferLength - sizeof(*FrameInfo);
+                const auto CopyResult = FrameBuffer->copy_latest(FrameRequest->after_sequence,
+                    *FrameInfo, Pixels, PixelCapacity);
+                switch (CopyResult)
+                {
+                case crosswarp::idd::FrameCopyResult::Unavailable:
+                    Status = STATUS_DEVICE_NOT_READY;
+                    break;
+                case crosswarp::idd::FrameCopyResult::NoNewFrame:
+                    Status = STATUS_NO_MORE_ENTRIES;
+                    break;
+                case crosswarp::idd::FrameCopyResult::BufferTooSmall:
+                    Status = STATUS_BUFFER_TOO_SMALL;
+                    Information = sizeof(*FrameInfo);
+                    break;
+                case crosswarp::idd::FrameCopyResult::Copied:
+                    Status = STATUS_SUCCESS;
+                    Information = sizeof(*FrameInfo) + static_cast<size_t>(FrameInfo->stride) * FrameInfo->height;
+                    break;
+                }
+            }
+        }
+    }
+
+    WdfRequestCompleteWithInformation(Request, Status, Information);
 }
 
 _Use_decl_annotations_
@@ -515,6 +643,18 @@ IndirectDeviceContext::IndirectDeviceContext(_In_ WDFDEVICE WdfDevice) :
 
 IndirectDeviceContext::~IndirectDeviceContext()
 {
+}
+
+bool IndirectDeviceContext::TryOpenUserClient() noexcept
+{
+    bool expected = false;
+    return m_UserClientOpen.compare_exchange_strong(expected, true, std::memory_order_acq_rel);
+}
+
+void IndirectDeviceContext::CloseUserClient() noexcept
+{
+    m_FrameBuffer->set_enabled(false);
+    m_UserClientOpen.store(false, std::memory_order_release);
 }
 
 void IndirectDeviceContext::InitAdapter()

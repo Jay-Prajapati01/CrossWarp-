@@ -23,6 +23,7 @@ pub enum VideoCodec {
     Av1,
     Jpeg,
     WindowControl,
+    DisplayControl,
     Bgra8,
 }
 

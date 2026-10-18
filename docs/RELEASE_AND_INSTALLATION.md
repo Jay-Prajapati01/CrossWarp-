@@ -4,7 +4,7 @@
 
 ## Current package
 
-The current protocol-v6 source produced an x64 NSIS bundle at `J:\cw\release\bundle\nsis\CrossWarp_0.1.0_x64-setup.exe`. Its exact hash and validation limits are in [current build validation](phase1-evidence/current-build-validation-2026-10-18.md). Standard `npm run build` uses the default Cargo target directory; set `CARGO_TARGET_DIR` to a separate path when the running app locks that output executable. Packaging success is not installation verification; this package has not passed installation or second-PC acceptance.
+The current protocol-v7 x64 NSIS bundle is `apps/desktop/src-tauri/target/release/bundle/nsis/CrossWarp_0.1.0_x64-setup.exe` (2.83 MiB, SHA-256 `09D2DB5361B6AC25F9E52520298EAF893644FA39DF425DF2A985830273C46C55`). It is unsigned. It installed silently and launched on JACK, but is not yet installed/validated on the second PC and does not install or sign the IDD driver. Standard `npm run build` uses the default Cargo target directory; use a short `CARGO_TARGET_DIR` (for example `J:\cw\crosswarp-v7-target`) if the Visual Studio CMake compiler smoke test fails under the long workspace path. Packaging success is not physical acceptance.
 
 The previous shared-session-identity installer at `artifacts/session-identity-build/release/bundle/nsis/CrossWarp_0.1.0_x64-setup.exe` is historical evidence; see [package build evidence](phase1-evidence/session-identity-package-build.md). It is not the current package. The current v6 peers must be upgraded together before cross-PC session checks.
 

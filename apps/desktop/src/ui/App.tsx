@@ -30,7 +30,9 @@ type Peer = { device_id: string; addresses: string[] };
 type PairingChallenge = { request_id: string; local_device: string; peer_device: string; verification_code: string };
 type PairingResult = { peer_device_id: string; session_id: string; trusted: boolean; transport_active: boolean; detail: string };
 type WindowShareRequest = { request_id: string; peer_device_id: string; stream_id: number; width: number; height: number };
+type DisplayShareRequest = { request_id: string; peer_device_id: string; stream_id: number; width: number; height: number };
 type RemoteWindowFrame = { peer_device_id: string; stream_id: number; sequence: number; timestamp_100ns: number; received_at_unix_ms: number; width: number; height: number; jpeg_base64: string };
+type RemoteDisplayFrame = RemoteWindowFrame;
 type CapturableWindow = { hwnd: number; title: string };
 type RemoteTransferProgress = { peer_device_id: string; direction: "upload" | "download"; bytes_sent: number; total_bytes: number; complete: boolean };
 type InputDiagnostic = { running: boolean; total: number; pointer_move: number; pointer_button: number; pointer_wheel: number; key_transition: number; error: string | null };
@@ -64,7 +66,11 @@ function Dashboard() {
   const [trustedPeerIds, setTrustedPeerIds] = useState<string[]>([]);
   const [challenge, setChallenge] = useState<PairingChallenge | null>(null);
   const [windowShareRequest, setWindowShareRequest] = useState<WindowShareRequest | null>(null);
+  const [displayShareRequest, setDisplayShareRequest] = useState<DisplayShareRequest | null>(null);
   const [remoteWindowFrame, setRemoteWindowFrame] = useState<RemoteWindowFrame | null>(null);
+  const [remoteDisplayFrame, setRemoteDisplayFrame] = useState<RemoteDisplayFrame | null>(null);
+  const [displayStreamError, setDisplayStreamError] = useState<string | null>(null);
+  const [displayShareActive, setDisplayShareActive] = useState(false);
   const [windowStreamError, setWindowStreamError] = useState<string | null>(null);
   const [capturableWindows, setCapturableWindows] = useState<CapturableWindow[] | null>(null);
   const [windowShareActive, setWindowShareActive] = useState(false);
@@ -144,6 +150,35 @@ function Dashboard() {
   }, [pairingResult?.peer_device_id, pairingResult?.transport_active]);
 
   useEffect(() => {
+    const peerDeviceId = pairingResult?.transport_active ? pairingResult.peer_device_id : null;
+    if (!peerDeviceId) {
+      setRemoteDisplayFrame(null);
+      return;
+    }
+    let lastFrameKey = "";
+    let active = true;
+    const poll = async () => {
+      try {
+        const frame = await invoke<RemoteDisplayFrame | null>("get_remote_display_frame", { peerDeviceId });
+        const frameKey = frame ? frame.stream_id + ":" + frame.sequence : "";
+        if (active && frame && frameKey !== lastFrameKey) {
+          lastFrameKey = frameKey;
+          setRemoteDisplayFrame(frame);
+        } else if (active && !frame) {
+          setRemoteDisplayFrame((current) => current?.peer_device_id === peerDeviceId ? null : current);
+        } else if (active && frame && Date.now() - frame.received_at_unix_ms > 1000) {
+          setRemoteDisplayFrame((current) => current?.peer_device_id === peerDeviceId ? null : current);
+        }
+      } catch (reason) {
+        if (active) setDisplayStreamError(String(reason));
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 50);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [pairingResult?.peer_device_id, pairingResult?.transport_active]);
+
+  useEffect(() => {
     let unlisten: (() => void)[] = [];
     void Promise.all([
       listen<PairingChallenge>("pairing-challenge", (event) => setChallenge(event.payload)),
@@ -151,11 +186,20 @@ function Dashboard() {
       listen<string>("pairing-ended", (event) => {
         setPairingResult((current) => current?.peer_device_id === event.payload ? null : current);
         setWindowShareRequest((current) => current?.peer_device_id === event.payload ? null : current);
+        setDisplayShareRequest((current) => current?.peer_device_id === event.payload ? null : current);
         setRemoteWindowFrame((current) => current?.peer_device_id === event.payload ? null : current);
+        setRemoteDisplayFrame((current) => current?.peer_device_id === event.payload ? null : current);
         setWindowShareActive(false);
+        setDisplayShareActive(false);
       }),
       listen<RemoteTransferProgress>("remote-transfer-progress", (event) => setTransferProgress(event.payload)),
       listen<WindowShareRequest>("window-share-request", (event) => setWindowShareRequest(event.payload)),
+      listen<DisplayShareRequest>("display-share-request", (event) => setDisplayShareRequest(event.payload)),
+      listen<string>("display-stream-error", (event) => setDisplayStreamError(event.payload)),
+      listen<string>("display-share-ended", (event) => {
+        setDisplayShareActive(false);
+        setRemoteDisplayFrame((current) => current?.peer_device_id === event.payload ? null : current);
+      }),
       listen<string>("window-stream-error", (event) => setWindowStreamError(event.payload)),
       listen<string>("window-share-ended", (event) => {
         setWindowShareActive(false);
@@ -256,6 +300,16 @@ function Dashboard() {
     } catch (reason) { setError(String(reason)); setWindowShareRequest(null); }
   }
 
+  async function respondToDisplayShare(approved: boolean) {
+    if (!displayShareRequest) return;
+    try {
+      await invoke("respond_to_display_share", { requestId: displayShareRequest.request_id, approved });
+      setDisplayShareRequest(null);
+      if (!approved) setRemoteDisplayFrame(null);
+      setDisplayStreamError(approved ? null : "Extended-display streaming was declined.");
+    } catch (reason) { setError(String(reason)); setDisplayShareRequest(null); }
+  }
+
   async function refreshCapturableWindows() {
     try {
       setCapturableWindows(await invoke<CapturableWindow[]>("list_capturable_windows"));
@@ -289,6 +343,32 @@ function Dashboard() {
       await invoke("stop_window_share", { peerDeviceId: pairingResult.peer_device_id });
       setWindowShareActive(false);
     } catch (reason) { setWindowStreamError(String(reason)); }
+  }
+
+  async function startDisplayShare() {
+    if (!pairingResult?.transport_active) return;
+    const approved = window.confirm(
+      "Stream this PC's actual CrossWarp indirect-display output to " + pairingResult.peer_device_id +
+      "? This requires the signed CrossWarp display driver to be installed and an extended monitor to be active. " +
+      "The peer must separately approve the stream. Capture stops when this stream or the session ends.",
+    );
+    if (!approved) return;
+    try {
+      await invoke("start_display_share", { peerDeviceId: pairingResult.peer_device_id });
+      setDisplayShareActive(true);
+      setDisplayStreamError(null);
+    } catch (reason) {
+      setDisplayShareActive(false);
+      setDisplayStreamError(String(reason));
+    }
+  }
+
+  async function stopDisplayShare() {
+    if (!pairingResult?.peer_device_id) return;
+    try {
+      await invoke("stop_display_share", { peerDeviceId: pairingResult.peer_device_id });
+      setDisplayShareActive(false);
+    } catch (reason) { setDisplayStreamError(String(reason)); }
   }
 
   async function revokeRemoteWindowPreview() {
@@ -497,6 +577,10 @@ function Dashboard() {
           {pairingResult && <section className="setup-panel"><div className="workspace-content"><strong>Trusted peer · encrypted transport active</strong><p>{pairingResult.detail}</p><div className="workspace-root">Authenticated peer · {pairingResult.peer_device_id}</div><div className="workspace-root">Session · {pairingResult.session_id}</div><div className="workspace-actions"><button onClick={() => void disconnectPeer()}>Disconnect peer</button></div></div></section>}
 
           {windowShareRequest && <section className="setup-panel" role="alert"><div className="setup-symbol">▱</div><div className="workspace-content"><strong>Approve live window and interactive control?</strong><p>{windowShareRequest.peer_device_id} is requesting permission to show stream {windowShareRequest.stream_id}, sized {windowShareRequest.width} × {windowShareRequest.height}. Frames and forwarded pointer, wheel, and keyboard input remain disabled until approved. Input is limited to the selected visible window and Windows UIPI restrictions still apply.</p><div className="workspace-actions"><button onClick={() => void respondToWindowShare(true)}>Approve live control</button><button onClick={() => void respondToWindowShare(false)}>Decline</button></div></div></section>}
+
+          {displayShareRequest && <section className="setup-panel" role="alert"><div className="setup-symbol">▣</div><div className="workspace-content"><strong>Approve live extended-display stream?</strong><p>{displayShareRequest.peer_device_id} is requesting to stream IDD display {displayShareRequest.width} × {displayShareRequest.height}. Pixels remain disabled until you approve. The stream is received as a display surface; it does not replace your Windows desktop.</p><div className="workspace-actions"><button onClick={() => void respondToDisplayShare(true)}>Approve display stream</button><button onClick={() => void respondToDisplayShare(false)}>Decline</button></div></div></section>}
+
+          {pairingResult?.transport_active && <section className="setup-panel workspace-panel"><div className="setup-symbol">▣</div><div className="workspace-content"><strong>True extended display · IDD capture path</strong><p>When the signed IDD is installed and Windows is extending to its virtual monitor, CrossWarp can capture that monitor's latest frames and stream them over the separate display lane. The receiver approves independently. Input, files, and live windows keep their own session lanes.</p>{displayStreamError && <div className="workspace-root" role="status">{displayStreamError}</div>}<div className="workspace-actions"><button disabled={displayShareActive} onClick={() => void startDisplayShare()}>Start IDD display stream</button>{displayShareActive && <button onClick={() => void stopDisplayShare()}>Stop display stream</button>}</div>{remoteDisplayFrame?.peer_device_id === pairingResult.peer_device_id && <div className="remote-display-surface"><div className="workspace-root">Received IDD display · {remoteDisplayFrame.width} × {remoteDisplayFrame.height} · frame {remoteDisplayFrame.sequence}</div><img src={"data:image/jpeg;base64," + remoteDisplayFrame.jpeg_base64} width={remoteDisplayFrame.width} height={remoteDisplayFrame.height} alt="Approved live CrossWarp extended display" /></div>}</div></section>}
 
           {pairingResult?.transport_active && <section className="setup-panel workspace-panel"><div className="setup-symbol">▱</div><div className="workspace-content"><strong>Live Window Handoff · interactive proxy</strong><p>The approved live window remains on its source PC. The proxy can be moved and resized in this dashboard. Click its image to focus it; pointer, wheel, and keyboard input are forwarded to that visible source window. Windows security boundaries still apply.</p>{windowStreamError && <div className="workspace-root" role="status">{windowStreamError}</div>}{remoteWindowFrame?.peer_device_id === pairingResult.peer_device_id && <div className="remote-window-preview portal-floating" style={{ left: portalPosition.left, top: portalPosition.top }}><div className="portal-titlebar" onPointerDown={beginPortalDrag} onPointerMove={movePortal} onPointerUp={() => { portalDrag.current = null; }} onPointerCancel={() => { portalDrag.current = null; }}><span>Live proxy · {remoteWindowFrame.width} × {remoteWindowFrame.height} · frame {remoteWindowFrame.sequence}</span><button onClick={() => setPortalPosition({ left: 24, top: 120 })}>Reset position</button></div><img tabIndex={0} onPointerMove={(event) => { const now = performance.now(); if (now - lastPortalMove.current >= 32) { lastPortalMove.current = now; const point = portalPoint(event); void sendPortalInput({ kind: "pointer_move", ...point }); } }} onPointerDown={(event) => { event.currentTarget.focus(); event.currentTarget.setPointerCapture(event.pointerId); const point = portalPoint(event); const button = event.button === 1 ? 3 : event.button === 2 ? 2 : event.button + 1; heldPortalButtons.current.set(button, point); void sendPortalInput({ kind: "pointer_button", ...point, button, down: true }); }} onPointerUp={(event) => { const point = portalPoint(event); const button = event.button === 1 ? 3 : event.button === 2 ? 2 : event.button + 1; heldPortalButtons.current.delete(button); void sendPortalInput({ kind: "pointer_button", ...point, button, down: false }); }} onPointerCancel={() => { for (const [button, point] of heldPortalButtons.current) void sendPortalInput({ kind: "pointer_button", ...point, button, down: false }); heldPortalButtons.current.clear(); }} onBlur={releasePortalInputs} onWheel={(event) => { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); const point = { x: Math.max(0, Math.min(65535, Math.round((event.clientX - rect.left) * 65535 / rect.width))), y: Math.max(0, Math.min(65535, Math.round((event.clientY - rect.top) * 65535 / rect.height))) }; void sendPortalInput({ kind: "pointer_wheel", ...point, delta: -Math.sign(event.deltaY) * 120, horizontal: Math.abs(event.deltaX) > Math.abs(event.deltaY) }); }} onKeyDown={(event) => { if (event.repeat) return; event.preventDefault(); heldPortalKeys.current.add(event.nativeEvent.keyCode); void sendPortalInput({ kind: "key", virtual_key: event.nativeEvent.keyCode, scan_code: 0, extended: false, down: true }); }} onKeyUp={(event) => { event.preventDefault(); heldPortalKeys.current.delete(event.nativeEvent.keyCode); void sendPortalInput({ kind: "key", virtual_key: event.nativeEvent.keyCode, scan_code: 0, extended: false, down: false }); }} onContextMenu={(event) => event.preventDefault()} src={"data:image/jpeg;base64," + remoteWindowFrame.jpeg_base64} width={remoteWindowFrame.width} height={remoteWindowFrame.height} alt="Approved interactive live remote window proxy" /><div className="portal-actions"><button onClick={() => void openNativePortal()}>Open as a native desktop window</button><button onClick={() => void revokeRemoteWindowPreview()}>Revoke proxy and stop remote capture</button></div></div>}</div></section>}
 

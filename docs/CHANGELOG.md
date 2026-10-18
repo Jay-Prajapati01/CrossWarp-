@@ -2,6 +2,12 @@
 
 This log summarizes repository milestones for maintainers. Git history is the source for exact diffs; evidence pages are the source for what was actually measured. A code milestone does not imply physical acceptance.
 
+## 2026-10-18 — protocol v7 IDD user-mode frame bridge
+
+- Added bounded IDD capture IOCTLs, a SetupAPI C++ client, Rust frame validation, JPEG encoding, and display-lane request/decision handling. Receiver approval is obtained before enabling capture.
+- Local checks passed: 67 agent tests, 8 desktop tests, two native CTest contract tests, frontend typecheck/build, formatting, and WDK Release compile/Inf2Cat signability.
+- The Tauri package attempt failed in the existing window-capture CMake compiler smoke test with MSVC FileTracker `FTK1011`; no v7 installer was produced in that run. Driver signing/loading, real IOCTL/capture, Windows 10 runtime, and all physical acceptance remain unverified. See [IDD frame bridge evidence](phase0-evidence/idd-user-frame-bridge.md).
+
 ## 2026-10-18 — current validation and IDD frame-bridge research
 
 - Re-ran the current workspace, desktop, frontend, native bridge, lint, formatting, and x64 NSIS package checks; exact results and artifact hash are in [current build validation](phase1-evidence/current-build-validation-2026-10-18.md).

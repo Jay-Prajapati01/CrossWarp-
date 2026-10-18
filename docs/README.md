@@ -31,7 +31,7 @@ This page is the map for the project documentation. Read the product specificati
 
 - [Engineering changelog](CHANGELOG.md) — implementation milestones and scope notes, with links back to current state/evidence.
 - [Architecture](ARCHITECTURE.md) — components, ownership boundaries, data flow, runtime lifecycle, and gaps.
-- [Session protocol](SESSION_PROTOCOL.md) — current protocol v6 handshake, encrypted records, service lanes, file RPC, input/media contracts.
+- [Session protocol](SESSION_PROTOCOL.md) — current protocol v7 handshake, encrypted records, service lanes, file RPC, input/media contracts.
 - [Security and privacy](SECURITY_AND_PRIVACY.md) — trust, encryption, permissions, native input limits, data storage, and threat boundaries.
 - [Development and build](DEVELOPMENT_AND_BUILD.md) — prerequisites, commands, project layout, and reproducible Windows builds.
 - [Testing and acceptance](TESTING_AND_ACCEPTANCE.md) — automated checks, evidence inventory, AT-01…AT-08, and physical test procedure.
@@ -46,6 +46,7 @@ This page is the map for the project documentation. Read the product specificati
 - [Phase 0: IDD sample build](phase0-evidence/IDD-sample-build.md)
 - [Phase 0: IDD Windows 10 target declaration](phase0-evidence/idd-windows10-target-spike.md)
 - [Phase 0: IDD swapchain frame buffer](phase0-evidence/idd-swapchain-frame-buffer.md)
+- [Phase 0: user-mode IDD frame bridge](phase0-evidence/idd-user-frame-bridge.md)
 - [Phase 0: local WGC window-capture smoke](phase0-evidence/wgc-capture-smoke.md)
 - [Phase 0: changed-frame burst capture proof](phase0-evidence/wgc-burst-capture.md)
 - [Phase 0: capture-to-window-lane preview](phase0-evidence/window-capture-preview.md)

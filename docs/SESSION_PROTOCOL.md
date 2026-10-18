@@ -19,7 +19,9 @@ After the authenticated handshake succeeds, both endpoints derive the same `Sess
 
 ## Version 5 input-event and media schema
 
-Version 6 retains the version-3 pairing/reconnect discriminator and version-4 event-time pointer coordinates for wheel ownership. It adds JPEG video and typed WindowControl stop/revoke/input frames for the consented interactive window proxy. A receiver can send normalized pointer, button, wheel, and key events tied to a source stream. The source only injects if that stream still maps to the active selected HWND. Version 5 peers are rejected during handshake; both devices must run protocol v6 builds to interoperate. This has source-level and local build/test evidence only; no physical cross-PC interaction is proven.
+Version 7 retains the version-3 pairing/reconnect discriminator, version-4 event-time pointer coordinates, and version-6 JPEG video plus typed WindowControl frames. It adds typed `DisplayControl` request/decision/stop actions on the authenticated display lane. The sender waits for the receiver's approval before enabling IDD capture; the receiver accepts pixels only for its approved stream. Both machines must run protocol v7 builds to interoperate. This has source, local automated test, native contract test, and WDK compile evidence only. No signed/loaded driver or physical cross-PC display interaction is proven.
+
+Version 6 introduced JPEG video and typed WindowControl stop/revoke/input frames for the consented interactive window proxy. A receiver can send normalized pointer, button, wheel, and key events tied to a source stream. The source only injects if that stream still maps to the active selected HWND. Version 5 peers are rejected during handshake; this historical increment has local build/test evidence only and no physical cross-PC interaction proof.
 
 ## Protocol v3 pairing and reconnect handshake
 

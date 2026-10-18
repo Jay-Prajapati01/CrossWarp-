@@ -13,10 +13,12 @@
 #include <wrl.h>
 
 #include <memory>
+#include <atomic>
 #include <vector>
 
 #include "Trace.h"
 #include "../../../../native/idd/frame_buffer.h"
+#include "../../../../native/idd/ioctl_protocol.h"
 
 namespace Microsoft
 {
@@ -104,11 +106,15 @@ namespace Microsoft
 
             void InitAdapter();
             void FinishInit(UINT ConnectorIndex);
+            std::shared_ptr<DisplayFrameBuffer> GetFrameBuffer() const { return m_FrameBuffer; }
+            bool TryOpenUserClient() noexcept;
+            void CloseUserClient() noexcept;
 
         protected:
             WDFDEVICE m_WdfDevice;
             IDDCX_ADAPTER m_Adapter;
             std::shared_ptr<DisplayFrameBuffer> m_FrameBuffer;
+            std::atomic<bool> m_UserClientOpen{false};
         };
 
         class IndirectMonitorContext
