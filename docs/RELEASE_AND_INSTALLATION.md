@@ -4,9 +4,9 @@
 
 ## Current package
 
-The current protocol-v4 build produced an x64 NSIS bundle at `artifacts/protocol-v4-build/release/bundle/nsis/CrossWarp_0.1.0_x64-setup.exe`. The exact hash, command and limits are in [protocol-v4 package evidence](phase1-evidence/protocol-v4-package-build.md). Standard `npm run build` uses the default Cargo target directory; set `CARGO_TARGET_DIR` to a separate path when the running app locks that output executable. Packaging success is not installation verification; this package has not passed installation or second-PC acceptance.
+The current protocol-v6 source produced an x64 NSIS bundle at `J:\cw\release\bundle\nsis\CrossWarp_0.1.0_x64-setup.exe`. Its exact hash and validation limits are in [current build validation](phase1-evidence/current-build-validation-2026-10-18.md). Standard `npm run build` uses the default Cargo target directory; set `CARGO_TARGET_DIR` to a separate path when the running app locks that output executable. Packaging success is not installation verification; this package has not passed installation or second-PC acceptance.
 
-The latest shared-session-identity source also built an unsigned x64 installer at `artifacts/session-identity-build/release/bundle/nsis/CrossWarp_0.1.0_x64-setup.exe`; see [package build evidence](phase1-evidence/session-identity-package-build.md). It is still an engineering package, not a production release, and has not been installed or run. Its protocol-v4 peers must be upgraded together before cross-PC session checks against this source.
+The previous shared-session-identity installer at `artifacts/session-identity-build/release/bundle/nsis/CrossWarp_0.1.0_x64-setup.exe` is historical evidence; see [package build evidence](phase1-evidence/session-identity-package-build.md). It is not the current package. The current v6 peers must be upgraded together before cross-PC session checks.
 
 ## Driver boundary
 

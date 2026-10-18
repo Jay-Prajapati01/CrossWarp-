@@ -31,7 +31,7 @@ This page is the map for the project documentation. Read the product specificati
 
 - [Engineering changelog](CHANGELOG.md) — implementation milestones and scope notes, with links back to current state/evidence.
 - [Architecture](ARCHITECTURE.md) — components, ownership boundaries, data flow, runtime lifecycle, and gaps.
-- [Session protocol](SESSION_PROTOCOL.md) — protocol v4 handshake, encrypted records, service lanes, file RPC, input/media contracts.
+- [Session protocol](SESSION_PROTOCOL.md) — current protocol v6 handshake, encrypted records, service lanes, file RPC, input/media contracts.
 - [Security and privacy](SECURITY_AND_PRIVACY.md) — trust, encryption, permissions, native input limits, data storage, and threat boundaries.
 - [Development and build](DEVELOPMENT_AND_BUILD.md) — prerequisites, commands, project layout, and reproducible Windows builds.
 - [Testing and acceptance](TESTING_AND_ACCEPTANCE.md) — automated checks, evidence inventory, AT-01…AT-08, and physical test procedure.
@@ -39,6 +39,7 @@ This page is the map for the project documentation. Read the product specificati
 - [Release and installation](RELEASE_AND_INSTALLATION.md) — current packaging, driver/signing constraints, and release checklist.
 - [Architecture research](ARCHITECTURE_RESEARCH.md) — public platform concepts and design consequences.
 - [Feasibility plan](FEASIBILITY_PLAN.md) — Phase 0 prerequisites and gates.
+- [ADR-0003: extended display and IDD frame bridge](decisions/ADR-0003-extended-display.md) — driver/user-session split, supported communication hook, and unimplemented frame-transport spike.
 
 ### Evidence logs
 

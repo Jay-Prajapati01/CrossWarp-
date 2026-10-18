@@ -2,6 +2,12 @@
 
 This log summarizes repository milestones for maintainers. Git history is the source for exact diffs; evidence pages are the source for what was actually measured. A code milestone does not imply physical acceptance.
 
+## 2026-10-18 — current validation and IDD frame-bridge research
+
+- Re-ran the current workspace, desktop, frontend, native bridge, lint, formatting, and x64 NSIS package checks; exact results and artifact hash are in [current build validation](phase1-evidence/current-build-validation-2026-10-18.md).
+- Confirmed from Microsoft documentation and the installed WDK header that the IDD's `EvtIddCxDeviceIoControl` is the supported user-session-to-driver callback. Recorded it as the boundary for a frame-bridge feasibility spike; no driver frame export or driver load is claimed.
+- Updated user-facing setup and troubleshooting pages to require matching protocol-v6 peers.
+
 ## Current development line
 
 ### Shared authenticated-session identity (current working increment)
