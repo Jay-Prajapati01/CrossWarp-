@@ -1,6 +1,6 @@
 # CrossWarp session protocol
 
-**Wire protocol:** version 4.
+**Wire protocol:** version 5.
 **Compatibility:** both peers must use a compatible protocol version. Unknown/older versions are rejected. No released compatibility guarantee exists yet.
 
 This guide describes the current implementation in `crates/agent/src`. For code-level types, see `protocol.rs`, `transport.rs`, `session_transport.rs`, `file_rpc.rs`, `input_session.rs`, and `media_session.rs`.
@@ -17,9 +17,9 @@ This guide describes the current implementation in `crates/agent/src`. For code-
 
 After the authenticated handshake succeeds, both endpoints derive the same `SessionId` by hashing the domain separator `crosswarp-session-id-v1\0` with the canonical signed pairing transcript and using the first 16 digest bytes as the UUID. The transcript contains both device identities, fresh endpoint nonces, and ephemeral key material, so a reconnect gets a fresh correlation ID without another wire round trip. The session ID is metadata for binding input/media records and diagnostics; it is not a secret or an authorization token. Authorization still comes from the authenticated encrypted transport and explicit capability consent.
 
-## Version 4 input-event schema
+## Version 5 input-event and media schema
 
-Version 4 retains the version-3 pairing/reconnect discriminator and advances the wire compatibility number for the input-event contract. Wheel events now carry event-time screen coordinates so ownership is hit-tested under the pointer rather than using stale keyboard focus. Version 3 peers are rejected during handshake; both devices must run protocol v4 builds before input events can be used.
+Version 5 retains the version-3 pairing/reconnect discriminator and version-4 event-time pointer coordinates for wheel ownership. It adds JPEG as a window-video codec identifier for the current desktop receiver preview. Version 4 peers are rejected during handshake; both devices must run protocol v5 builds to interoperate.
 
 ## Protocol v3 pairing and reconnect handshake
 
@@ -86,7 +86,7 @@ This is a protocol/routing contract only. The desktop does not yet send or consu
 
 `MediaFrame` carries session ID, target device ID, stream ID, sequence, monotonic source timestamp in 100 ns units, dimensions, codec (`H264`, `HEVC`, `AV1`, or `BGRA8`), key-frame flag, and binary payload. A small bounded JSON header is length-prefixed within the service payload; media bytes remain binary. Dimensions and payload are bounded, and receivers reject wrong destinations, replay/reordering, and invalid sizes. Sequence gaps are allowed after stale frame drops.
 
-This envelope does not capture pixels, encode or decode a codec, render a remote window, or create a Windows display. No desktop video producer or consumer is attached.
+The desktop now consumes the authenticated window-video lane, checks session/destination/replay state, requests local approval before rendering the first JPEG frame, and exposes the latest approved preview to the UI. JPEG decoding is delegated to the WebView image decoder. This is a receiver-only preview increment: there is still no peer-side capture/encoding producer, interactive proxy, forwarded input, or display-driver consumer. H264/HEVC/AV1/BGRA decoding is not wired. A display-video producer/consumer is still absent.
 
 ## Evolution rules
 

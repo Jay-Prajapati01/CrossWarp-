@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::{HashMap, HashSet};
@@ -11,9 +12,10 @@ use unified_workspace_agent::windows_input::{InputCapture, InputKind};
 use unified_workspace_agent::{
     accept_pair_or_trusted_over_stream, connect_trusted_over_stream, pair_over_stream,
     spawn_file_rpc, spawn_session_transport, DeviceIdentity, FileRequest, FileResponse,
-    FileRpcClient, HandshakeRole, HostPlatform, IdentityStore, LanEndpoint, PairedTransport,
-    PairingApproval, PeerBrowser, SessionChallenge, SessionChannels, SessionCoordinator,
-    SharedEntry, SharedWorkspace, TrustedPeerStore, MAX_RPC_READ_CHUNK, MAX_RPC_UPLOAD_CHUNK,
+    FileRpcClient, HandshakeRole, HostPlatform, IdentityStore, LanEndpoint, MediaLane,
+    MediaSessionReceiver, PairedTransport, PairingApproval, PeerBrowser, SessionChallenge,
+    SessionChannels, SessionCoordinator, SharedEntry, SharedWorkspace, TrustedPeerStore,
+    VideoCodec, MAX_RPC_READ_CHUNK, MAX_RPC_UPLOAD_CHUNK,
 };
 
 #[derive(Clone, Default)]
@@ -65,11 +67,13 @@ struct InputDiagnosticReport {
 #[derive(Default)]
 struct PairingInner {
     pending: Mutex<HashMap<String, oneshot::Sender<bool>>>,
+    pending_window_shares: Mutex<HashMap<String, (String, oneshot::Sender<bool>)>>,
     trusted: Mutex<Vec<String>>,
     active: Mutex<HashSet<String>>,
     clients: Mutex<HashMap<String, FileRpcClient>>,
     services: Mutex<HashMap<String, SessionChannels>>,
     session_tasks: Mutex<HashMap<String, tokio::task::AbortHandle>>,
+    window_frames: Mutex<HashMap<String, RemoteWindowFrame>>,
 }
 
 struct AbortChildrenOnDrop(Vec<tokio::task::AbortHandle>);
@@ -114,8 +118,29 @@ struct RemoteTransferProgress {
     complete: bool,
 }
 
+#[derive(Clone, Serialize)]
+struct WindowShareRequestView {
+    request_id: String,
+    peer_device_id: String,
+    stream_id: u64,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Clone, Serialize)]
+struct RemoteWindowFrame {
+    peer_device_id: String,
+    stream_id: u64,
+    sequence: u64,
+    timestamp_100ns: u64,
+    width: u32,
+    height: u32,
+    jpeg_base64: String,
+}
+
 static NEXT_PAIRING_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 static NEXT_DOWNLOAD_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static NEXT_WINDOW_SHARE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 #[derive(Serialize)]
 struct NetworkStatus {
@@ -553,6 +578,57 @@ fn respond_to_pairing(
 }
 
 #[tauri::command]
+fn respond_to_window_share(
+    request_id: String,
+    approved: bool,
+    pairing: tauri::State<'_, PairingState>,
+) -> Result<(), String> {
+    let (_, sender) = pairing
+        .0
+        .pending_window_shares
+        .lock()
+        .map_err(|_| "window-share request state is unavailable")?
+        .remove(&request_id)
+        .ok_or("window-share request expired")?;
+    sender
+        .send(approved)
+        .map_err(|_| "window-share request ended".to_owned())
+}
+
+#[tauri::command]
+fn get_remote_window_frame(
+    peer_device_id: String,
+    pairing: tauri::State<'_, PairingState>,
+) -> Result<Option<RemoteWindowFrame>, String> {
+    pairing
+        .0
+        .window_frames
+        .lock()
+        .map(|frames| frames.get(&peer_device_id).cloned())
+        .map_err(|_| "window-frame state is unavailable".to_owned())
+}
+
+fn validate_window_preview_frame(
+    frame: &unified_workspace_agent::MediaFrame,
+) -> Result<(), &'static str> {
+    if frame.codec != VideoCodec::Jpeg {
+        return Err("the peer sent a window codec this desktop cannot display");
+    }
+    // Prevent hostile or accidental dimensions from causing extreme WebView
+    // image-decoder allocations even when the transport payload is bounded.
+    if frame.width > 3840
+        || frame.height > 2160
+        || u64::from(frame.width) * u64::from(frame.height) > 8_294_400
+    {
+        return Err("the peer sent a window frame larger than the 4K preview limit");
+    }
+    if !frame.payload.starts_with(&[0xff, 0xd8]) || !frame.payload.ends_with(&[0xff, 0xd9]) {
+        return Err("the peer sent invalid JPEG data");
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn disconnect_peer(
     app: tauri::AppHandle,
     peer_device_id: String,
@@ -678,6 +754,7 @@ async fn activate_session(
         );
     }
     let session_id = paired.session_id();
+    let local_device_id = paired.local_device().clone();
     let (sender, receiver, approval) = paired.into_encrypted();
     let is_new_pairing = approval.is_some();
     if let Some(approval) = approval {
@@ -716,9 +793,63 @@ async fn activate_session(
         services.files.receiver.clone(),
         workspace,
     );
+    let window_frames = services.window_video.receiver.clone();
+    let window_pairing = pairing.clone();
+    let window_app = completion_app.clone();
+    let window_peer = peer_for_task.clone();
+    let mut media_receiver =
+        MediaSessionReceiver::new(session_id, local_device_id, MediaLane::Window);
+    let window_video_task = tokio::spawn(async move {
+        let mut approved_stream = None;
+        while let Some(bytes) = window_frames.recv().await {
+            let frame = match media_receiver.accept(&bytes) {
+                Ok(frame) => match validate_window_preview_frame(&frame) {
+                    Ok(()) => frame,
+                    Err(error) => {
+                        let _ = window_app.emit("window-stream-error", error);
+                        break;
+                    }
+                },
+                Err(error) => {
+                    let _ = window_app.emit("window-stream-error", error.to_string());
+                    break;
+                }
+            };
+
+            if approved_stream != Some(frame.stream_id) {
+                let approved = request_window_share_approval(
+                    window_app.clone(),
+                    window_pairing.clone(),
+                    window_peer.clone(),
+                    frame.stream_id,
+                    frame.width,
+                    frame.height,
+                )
+                .await;
+                if !approved {
+                    break;
+                }
+                approved_stream = Some(frame.stream_id);
+            }
+
+            let latest = RemoteWindowFrame {
+                peer_device_id: window_peer.clone(),
+                stream_id: frame.stream_id,
+                sequence: frame.sequence,
+                timestamp_100ns: frame.timestamp_100ns,
+                width: frame.width,
+                height: frame.height,
+                jpeg_base64: base64::engine::general_purpose::STANDARD.encode(frame.payload),
+            };
+            if let Ok(mut stored) = window_pairing.window_frames.lock() {
+                stored.insert(window_peer.clone(), latest);
+            }
+        }
+    });
     let mut transport_task = transport_task;
     let abort_children = AbortChildrenOnDrop(vec![
         file_task.abort_handle(),
+        window_video_task.abort_handle(),
         transport_task.abort_handle(),
     ]);
     let task = tokio::spawn(async move {
@@ -748,6 +879,10 @@ async fn activate_session(
         if let Ok(mut services_by_peer) = session_pairing.services.lock() {
             services_by_peer.remove(&peer_for_task);
         }
+        if let Ok(mut frames) = session_pairing.window_frames.lock() {
+            frames.remove(&peer_for_task);
+        }
+        reject_pending_window_share_requests(&session_pairing, &peer_for_task);
         if let Ok(mut tasks) = session_pairing.session_tasks.lock() {
             tasks.remove(&peer_for_task);
         }
@@ -755,6 +890,67 @@ async fn activate_session(
     });
     let _ = completion_app.emit("pairing-established", &result);
     Ok(result)
+}
+
+async fn request_window_share_approval(
+    app: tauri::AppHandle,
+    pairing: Arc<PairingInner>,
+    peer_device_id: String,
+    stream_id: u64,
+    width: u32,
+    height: u32,
+) -> bool {
+    use tauri::Emitter;
+
+    let request_id = format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT_WINDOW_SHARE_ID.fetch_add(1, Ordering::Relaxed)
+    );
+    let (approve, result) = oneshot::channel();
+    if let Ok(mut pending) = pairing.pending_window_shares.lock() {
+        pending.insert(request_id.clone(), (peer_device_id.clone(), approve));
+    } else {
+        return false;
+    }
+    let request = WindowShareRequestView {
+        request_id: request_id.clone(),
+        peer_device_id,
+        stream_id,
+        width,
+        height,
+    };
+    if app.emit("window-share-request", request).is_err() {
+        if let Ok(mut pending) = pairing.pending_window_shares.lock() {
+            pending.remove(&request_id);
+        }
+        return false;
+    }
+    let approved = tokio::time::timeout(std::time::Duration::from_secs(120), result)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or(false);
+    if let Ok(mut pending) = pairing.pending_window_shares.lock() {
+        pending.remove(&request_id);
+    }
+    approved
+}
+
+fn reject_pending_window_share_requests(pairing: &PairingInner, peer_device_id: &str) {
+    let Ok(mut pending) = pairing.pending_window_shares.lock() else {
+        return;
+    };
+    let requests = pending
+        .iter()
+        .filter(|(_, (peer, _))| peer == peer_device_id)
+        .map(|(request_id, _)| request_id.clone())
+        .collect::<Vec<_>>();
+    for request_id in requests {
+        if let Some((_, sender)) = pending.remove(&request_id) {
+            let _ = sender.send(false);
+        }
+    }
 }
 
 fn persist_approval(approval: &PairingApproval) -> Result<(), String> {
@@ -1241,6 +1437,8 @@ fn main() {
             reconnect_trusted_peer,
             list_trusted_peers,
             respond_to_pairing,
+            respond_to_window_share,
+            get_remote_window_frame,
             disconnect_peer,
             list_remote_workspace,
             create_remote_directory,
@@ -1345,5 +1543,32 @@ mod tests {
         );
         tokio::fs::remove_file(temporary).await.unwrap();
         tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[test]
+    fn window_preview_accepts_bounded_jpeg_and_rejects_unsupported_or_excessive_frames() {
+        let identity = DeviceIdentity::generate();
+        let mut frame = unified_workspace_agent::MediaFrame {
+            session_id: SessionId::new(),
+            target: identity.device_id(),
+            stream_id: 1,
+            sequence: 0,
+            timestamp_100ns: 1,
+            width: 1920,
+            height: 1080,
+            codec: VideoCodec::Jpeg,
+            key_frame: true,
+            payload: vec![0xff, 0xd8, 0xff, 0xd9],
+        };
+        assert!(validate_window_preview_frame(&frame).is_ok());
+        frame.codec = VideoCodec::H264;
+        assert!(validate_window_preview_frame(&frame).is_err());
+        frame.codec = VideoCodec::Jpeg;
+        frame.payload = vec![1, 2, 3, 4];
+        assert!(validate_window_preview_frame(&frame).is_err());
+        frame.payload = vec![0xff, 0xd8, 0xff, 0xd9];
+        frame.width = 7680;
+        frame.height = 4320;
+        assert!(validate_window_preview_frame(&frame).is_err());
     }
 }

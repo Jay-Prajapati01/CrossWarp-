@@ -29,6 +29,8 @@ type NetworkStatus = { device_id: string; listen_address: string; discovery: str
 type Peer = { device_id: string; addresses: string[] };
 type PairingChallenge = { request_id: string; local_device: string; peer_device: string; verification_code: string };
 type PairingResult = { peer_device_id: string; session_id: string; trusted: boolean; transport_active: boolean; detail: string };
+type WindowShareRequest = { request_id: string; peer_device_id: string; stream_id: number; width: number; height: number };
+type RemoteWindowFrame = { peer_device_id: string; stream_id: number; sequence: number; timestamp_100ns: number; width: number; height: number; jpeg_base64: string };
 type RemoteTransferProgress = { peer_device_id: string; direction: "upload" | "download"; bytes_sent: number; total_bytes: number; complete: boolean };
 type InputDiagnostic = { running: boolean; total: number; pointer_move: number; pointer_button: number; pointer_wheel: number; key_transition: number; error: string | null };
 
@@ -49,6 +51,9 @@ export function App() {
   const [peers, setPeers] = useState<Peer[]>([]);
   const [trustedPeerIds, setTrustedPeerIds] = useState<string[]>([]);
   const [challenge, setChallenge] = useState<PairingChallenge | null>(null);
+  const [windowShareRequest, setWindowShareRequest] = useState<WindowShareRequest | null>(null);
+  const [remoteWindowFrame, setRemoteWindowFrame] = useState<RemoteWindowFrame | null>(null);
+  const [windowStreamError, setWindowStreamError] = useState<string | null>(null);
   const [pairingResult, setPairingResult] = useState<PairingResult | null>(null);
   const [remoteEntries, setRemoteEntries] = useState<WorkspaceEntry[] | null>(null);
   const [remoteDirectory, setRemoteDirectory] = useState<string | null>(null);
@@ -90,12 +95,42 @@ export function App() {
   }, [pairingResult?.peer_device_id, pairingResult?.transport_active]);
 
   useEffect(() => {
+    const peerDeviceId = pairingResult?.transport_active ? pairingResult.peer_device_id : null;
+    if (!peerDeviceId) {
+      setRemoteWindowFrame(null);
+      return;
+    }
+    let lastSequence = -1;
+    let active = true;
+    const poll = async () => {
+      try {
+        const frame = await invoke<RemoteWindowFrame | null>("get_remote_window_frame", { peerDeviceId });
+        if (active && frame && frame.sequence !== lastSequence) {
+          lastSequence = frame.sequence;
+          setRemoteWindowFrame(frame);
+        }
+      } catch (reason) {
+        if (active) setWindowStreamError(String(reason));
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 100);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [pairingResult?.peer_device_id, pairingResult?.transport_active]);
+
+  useEffect(() => {
     let unlisten: (() => void)[] = [];
     void Promise.all([
       listen<PairingChallenge>("pairing-challenge", (event) => setChallenge(event.payload)),
       listen<PairingResult>("pairing-established", (event) => setPairingResult(event.payload)),
-      listen<string>("pairing-ended", (event) => setPairingResult((current) => current?.peer_device_id === event.payload ? null : current)),
+      listen<string>("pairing-ended", (event) => {
+        setPairingResult((current) => current?.peer_device_id === event.payload ? null : current);
+        setWindowShareRequest((current) => current?.peer_device_id === event.payload ? null : current);
+        setRemoteWindowFrame((current) => current?.peer_device_id === event.payload ? null : current);
+      }),
       listen<RemoteTransferProgress>("remote-transfer-progress", (event) => setTransferProgress(event.payload)),
+      listen<WindowShareRequest>("window-share-request", (event) => setWindowShareRequest(event.payload)),
+      listen<string>("window-stream-error", (event) => setWindowStreamError(event.payload)),
     ])
       .then((dispose) => { unlisten = dispose; })
       .catch((reason: unknown) => setError(String(reason)));
@@ -179,6 +214,16 @@ export function App() {
       await invoke("respond_to_pairing", { requestId: challenge.request_id, approved });
       setChallenge(null);
     } catch (reason) { setError(String(reason)); setChallenge(null); }
+  }
+
+  async function respondToWindowShare(approved: boolean) {
+    if (!windowShareRequest) return;
+    try {
+      await invoke("respond_to_window_share", { requestId: windowShareRequest.request_id, approved });
+      setWindowShareRequest(null);
+      if (!approved) setRemoteWindowFrame(null);
+      setWindowStreamError(approved ? null : "Live window frames were declined.");
+    } catch (reason) { setError(String(reason)); setWindowShareRequest(null); }
   }
 
   async function disconnectPeer() {
@@ -330,6 +375,10 @@ export function App() {
 
           {peers.length > 0 && <section className="setup-panel"><div className="workspace-content"><strong>Discovered devices</strong><p>New peers require both users to approve the same six-digit code. Previously approved peers reconnect using their stored device identity.</p>{peers.map((peer) => { const trusted = trustedPeerIds.includes(peer.device_id); return <div className="peer-row" key={peer.device_id}><span>{peer.device_id} · {peer.addresses.join(", ")}</span><button onClick={() => peer.addresses[0] && pairWith(peer, peer.addresses[0])}>{trusted ? "Reconnect" : "Request pairing"}</button></div>; })}</div></section>}
           {pairingResult && <section className="setup-panel"><div className="workspace-content"><strong>Trusted peer · encrypted transport active</strong><p>{pairingResult.detail}</p><div className="workspace-root">Authenticated peer · {pairingResult.peer_device_id}</div><div className="workspace-root">Session · {pairingResult.session_id}</div><div className="workspace-actions"><button onClick={() => void disconnectPeer()}>Disconnect peer</button></div></div></section>}
+
+          {windowShareRequest && <section className="setup-panel" role="alert"><div className="setup-symbol">▱</div><div className="workspace-content"><strong>Approve incoming live-window frames?</strong><p>{windowShareRequest.peer_device_id} is requesting permission to show stream {windowShareRequest.stream_id}, sized {windowShareRequest.width} × {windowShareRequest.height}. Frames remain hidden until approved. This receiver currently provides preview only; forwarded interaction is not implemented.</p><div className="workspace-actions"><button onClick={() => void respondToWindowShare(true)}>Approve preview</button><button onClick={() => void respondToWindowShare(false)}>Decline</button></div></div></section>}
+
+          {pairingResult?.transport_active && <section className="setup-panel workspace-panel"><div className="setup-symbol">▱</div><div className="workspace-content"><strong>Live Window Handoff · receiver preview</strong><p>Only an authenticated JPEG window-video lane is accepted. This does not yet capture a peer window or forward input, so it is not an interactive portal.</p>{windowStreamError && <div className="workspace-root" role="status">{windowStreamError}</div>}{remoteWindowFrame?.peer_device_id === pairingResult.peer_device_id && <div className="remote-window-preview"><div className="workspace-root">Preview only · {remoteWindowFrame.width} × {remoteWindowFrame.height} · frame {remoteWindowFrame.sequence}</div><img src={"data:image/jpeg;base64," + remoteWindowFrame.jpeg_base64} width={remoteWindowFrame.width} height={remoteWindowFrame.height} alt="Approved live remote window preview" /></div>}</div></section>}
 
           {pairingResult?.transport_active && <section className="setup-panel workspace-panel"><div className="setup-symbol">⇄</div><div className="workspace-content"><strong>Peer Shared Workspace</strong><p>Contents are requested over the authenticated encrypted connection. The peer must grant a folder before it appears here.</p><div className="workspace-actions"><button onClick={() => void refreshRemoteDirectory(remoteDirectory)}>Refresh peer folder</button><button onClick={() => void createRemoteFolder()}>New peer folder</button><button disabled={Boolean(transferProgress && !transferProgress.complete)} onClick={() => void uploadRemoteFile()}>Upload file</button></div>{transferProgress?.peer_device_id === pairingResult.peer_device_id && <div className="workspace-root" role="status">{transferProgress.complete ? (transferProgress.direction === "upload" ? "Upload verified" : "Download saved") : (transferProgress.direction === "upload" ? "Uploading" : "Downloading")} · {transferProgress.bytes_sent.toLocaleString()} / {transferProgress.total_bytes.toLocaleString()} bytes{transferProgress.total_bytes > 0 ? ` · ${Math.floor(transferProgress.bytes_sent * 100 / transferProgress.total_bytes)}%` : ""}</div>}{remoteEntries && <><div className="workspace-root">Remote folder · {remoteDirectory || "/"}</div><div className="file-list">{remoteDirectory && <button className="file-row folder-row" onClick={() => void refreshRemoteDirectory(remoteDirectory.includes("/") ? remoteDirectory.slice(0, remoteDirectory.lastIndexOf("/")) : null)}>↰ <span>Parent folder</span></button>}{remoteEntries.map((entry) => <div className="remote-entry" key={entry.relative_path}><button className="file-row" onClick={() => entry.kind === "directory" ? void refreshRemoteDirectory(entry.relative_path) : void downloadRemoteFile(entry)}><span>{entry.kind === "directory" ? "▰" : "▤"} {entry.name}</span><small>{entry.kind === "directory" ? "Folder" : `${entry.size.toLocaleString()} bytes · download`}</small></button><div className="remote-entry-actions"><button onClick={() => void renameRemoteEntry(entry)}>Rename</button>{entry.kind === "file" && <button onClick={() => void deleteRemoteFile(entry)}>Delete</button>}</div></div>)}{remoteEntries.length === 0 && <span className="empty-files">Peer folder is empty.</span>}</div></>}</div></section>}
 

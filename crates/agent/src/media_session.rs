@@ -21,6 +21,7 @@ pub enum VideoCodec {
     H264,
     Hevc,
     Av1,
+    Jpeg,
     Bgra8,
 }
 
@@ -316,7 +317,8 @@ mod tests {
         let (left, _left_worker) = spawn_session_transport(left_sender, left_receiver);
         let (right, _right_worker) = spawn_session_transport(right_sender, right_receiver);
         let session = SessionId::new();
-        let window = frame(session, right_identity.device_id(), 0, 100);
+        let mut window = frame(session, right_identity.device_id(), 0, 100);
+        window.codec = VideoCodec::Jpeg;
         let display = frame(session, right_identity.device_id(), 0, 200);
         let mut window_receiver =
             MediaSessionReceiver::new(session, right_identity.device_id(), MediaLane::Window);
