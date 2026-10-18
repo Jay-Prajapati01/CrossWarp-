@@ -4,7 +4,7 @@
 
 ## Current package
 
-The Tauri application can produce an x64 NSIS bundle at `apps/desktop/src-tauri/target/release/bundle/nsis/CrossWarp_0.1.0_x64-setup.exe`. Build it using [Development and build](DEVELOPMENT_AND_BUILD.md). Inspect the artifact hash and provenance in [Implementation status](IMPLEMENTATION_STATUS.md). Packaging success is not installation verification; the package has not passed second-PC installation and acceptance.
+The current protocol-v4 build produced an x64 NSIS bundle at `artifacts/protocol-v4-build/release/bundle/nsis/CrossWarp_0.1.0_x64-setup.exe`. The exact hash, command and limits are in [protocol-v4 package evidence](phase1-evidence/protocol-v4-package-build.md). Standard `npm run build` uses the default Cargo target directory; set `CARGO_TARGET_DIR` to a separate path when the running app locks that output executable. Packaging success is not installation verification; this package has not passed installation or second-PC acceptance.
 
 ## Driver boundary
 
