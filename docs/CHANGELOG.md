@@ -11,7 +11,7 @@ This log summarizes repository milestones for maintainers. Git history is the so
 ## 2026-10-18 — IDD Windows 10 target packaging spike
 
 - Changed the Microsoft sample INF's OS decoration from Windows build 22000 to 17134, aligning its declared package floor with the documented Windows 10 1803+ IddCx/UMDF candidate path.
-- Rebuilt the x64 Release sample; driver and app compile/link passed, Inf2Cat signability reported zero errors/warnings, and an unsigned catalog was generated. The driver still drops frames, remains unsigned/unloaded, and has not been tested on Windows 10 hardware. See [IDD Windows 10 target evidence](phase0-evidence/idd-windows10-target-spike.md).
+- Added a bounded BGRA8 latest-frame snapshot to the IDD swapchain path and a standalone native contract test. The WDK driver/app compile/link and Inf2Cat signability check pass with zero errors/warnings; CTest passes 1/1. Frames still remain in the driver process; there is no user-session export, encoder, network path, driver load, or Windows 10 hardware test. See [IDD Windows 10 target evidence](phase0-evidence/idd-windows10-target-spike.md) and [swapchain frame-buffer evidence](phase0-evidence/idd-swapchain-frame-buffer.md).
 
 ## Current development line
 

@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "Trace.h"
+#include "../../../../native/idd/frame_buffer.h"
 
 namespace Microsoft
 {
@@ -33,6 +34,8 @@ namespace Microsoft
 {
     namespace IndirectDisp
     {
+        using crosswarp::idd::DisplayFrameBuffer;
+
         /// <summary>
         /// Manages the creation and lifetime of a Direct3D render device.
         /// </summary>
@@ -72,7 +75,8 @@ namespace Microsoft
         class SwapChainProcessor
         {
         public:
-            SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, std::shared_ptr<Direct3DDevice> Device, HANDLE NewFrameEvent);
+            SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, std::shared_ptr<Direct3DDevice> Device,
+                HANDLE NewFrameEvent, std::shared_ptr<DisplayFrameBuffer> FrameBuffer);
             ~SwapChainProcessor();
 
         private:
@@ -83,6 +87,7 @@ namespace Microsoft
 
             IDDCX_SWAPCHAIN m_hSwapChain;
             std::shared_ptr<Direct3DDevice> m_Device;
+            std::shared_ptr<DisplayFrameBuffer> m_FrameBuffer;
             HANDLE m_hAvailableBufferEvent;
             Microsoft::WRL::Wrappers::Thread m_hThread;
             Microsoft::WRL::Wrappers::Event m_hTerminateEvent;
@@ -103,12 +108,13 @@ namespace Microsoft
         protected:
             WDFDEVICE m_WdfDevice;
             IDDCX_ADAPTER m_Adapter;
+            std::shared_ptr<DisplayFrameBuffer> m_FrameBuffer;
         };
 
         class IndirectMonitorContext
         {
         public:
-            IndirectMonitorContext(_In_ IDDCX_MONITOR Monitor);
+            IndirectMonitorContext(_In_ IDDCX_MONITOR Monitor, std::shared_ptr<DisplayFrameBuffer> FrameBuffer);
             virtual ~IndirectMonitorContext();
 
             void AssignSwapChain(IDDCX_SWAPCHAIN SwapChain, LUID RenderAdapter, HANDLE NewFrameEvent);
@@ -116,6 +122,7 @@ namespace Microsoft
 
         private:
             IDDCX_MONITOR m_Monitor;
+            std::shared_ptr<DisplayFrameBuffer> m_FrameBuffer;
             std::unique_ptr<SwapChainProcessor> m_ProcessingThread;
         } ;
     }

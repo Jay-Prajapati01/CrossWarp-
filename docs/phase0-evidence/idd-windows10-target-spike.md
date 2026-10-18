@@ -26,4 +26,4 @@ Command: `scripts/build-idd-sample.ps1 -Configuration Release`
 
 ## Limits
 
-The source is still Microsoft's sample driver: its swapchain loop releases each surface without encoding or exporting frames. The package is unsigned and was not installed or loaded; the Windows 10 peer was not used for this test. This does not prove true extended display, CrossWarp frame transport, or any of AT-01 through AT-08.
+This package-target test predates the later [swapchain frame-buffer increment](idd-swapchain-frame-buffer.md). The driver remains unsigned and was not installed or loaded; the Windows 10 peer was not used. Neither this INF declaration nor the later CPU snapshot proves user-session frame export, true wireless extended display, or any of AT-01 through AT-08.

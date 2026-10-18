@@ -18,13 +18,14 @@ Environment:
 #include "Driver.h"
 #include "Driver.tmh"
 
+
 using namespace std;
 using namespace Microsoft::IndirectDisp;
 using namespace Microsoft::WRL;
 
 #pragma region SampleMonitors
 
-static constexpr DWORD IDD_SAMPLE_MONITOR_COUNT = 3; // If monitor count > ARRAYSIZE(s_SampleMonitors), we create edid-less monitors
+static constexpr DWORD IDD_SAMPLE_MONITOR_COUNT = 1; // CrossWarp exposes one remote physical display per device.
 
 // Default modes reported for edid-less monitors. The first mode is set as preferred
 static const struct IndirectSampleMonitor::SampleMonitorMode s_SampleDefaultModes[] = 
@@ -321,8 +322,9 @@ HRESULT Direct3DDevice::Init()
 
 #pragma region SwapChainProcessor
 
-SwapChainProcessor::SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, shared_ptr<Direct3DDevice> Device, HANDLE NewFrameEvent)
-    : m_hSwapChain(hSwapChain), m_Device(Device), m_hAvailableBufferEvent(NewFrameEvent)
+SwapChainProcessor::SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, shared_ptr<Direct3DDevice> Device,
+    HANDLE NewFrameEvent, shared_ptr<DisplayFrameBuffer> FrameBuffer)
+    : m_hSwapChain(hSwapChain), m_Device(Device), m_FrameBuffer(std::move(FrameBuffer)), m_hAvailableBufferEvent(NewFrameEvent)
 {
     m_hTerminateEvent.Attach(CreateEvent(nullptr, FALSE, FALSE, nullptr));
 
@@ -384,6 +386,9 @@ void SwapChainProcessor::RunCore()
         return;
     }
 
+    ComPtr<ID3D11Texture2D> stagingTexture;
+    D3D11_TEXTURE2D_DESC stagingDescription{};
+
     // Acquire and release buffers in a loop
     for (;;)
     {
@@ -425,16 +430,45 @@ void SwapChainProcessor::RunCore()
             // We have new frame to process, the surface has a reference on it that the driver has to release
             AcquiredBuffer.Attach(Buffer.MetaData.pSurface);
 
-            // ==============================
-            // TODO: Process the frame here
-            //
-            // This is the most performance-critical section of code in an IddCx driver. It's important that whatever
-            // is done with the acquired surface be finished as quickly as possible. This operation could be:
-            //  * a GPU copy to another buffer surface for later processing (such as a staging surface for mapping to CPU memory)
-            //  * a GPU encode operation
-            //  * a GPU VPBlt to another surface
-            //  * a GPU custom compute shader encode operation
-            // ==============================
+            // Capture the newest BGRA frame into a bounded CPU snapshot. Network
+            // I/O, consent, and compression stay outside this Session 0 driver.
+            ComPtr<ID3D11Texture2D> sourceTexture;
+            if (m_FrameBuffer && m_FrameBuffer->is_enabled() && SUCCEEDED(AcquiredBuffer.As(&sourceTexture)))
+            {
+                D3D11_TEXTURE2D_DESC sourceDescription{};
+                sourceTexture->GetDesc(&sourceDescription);
+                const bool supportedSurface = sourceDescription.Width <= 3840 &&
+                    sourceDescription.Height <= 2160 &&
+                    sourceDescription.Format == DXGI_FORMAT_B8G8R8A8_UNORM;
+                const bool stagingMatches = stagingTexture &&
+                    stagingDescription.Width == sourceDescription.Width &&
+                    stagingDescription.Height == sourceDescription.Height &&
+                    stagingDescription.Format == sourceDescription.Format &&
+                    stagingDescription.SampleDesc.Count == sourceDescription.SampleDesc.Count;
+
+                if (supportedSurface && !stagingMatches)
+                {
+                    stagingTexture.Reset();
+                    stagingDescription = sourceDescription;
+                    stagingDescription.Usage = D3D11_USAGE_STAGING;
+                    stagingDescription.BindFlags = 0;
+                    stagingDescription.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                    stagingDescription.MiscFlags = 0;
+                    hr = m_Device->Device->CreateTexture2D(&stagingDescription, nullptr, &stagingTexture);
+                }
+
+                if (supportedSurface && SUCCEEDED(hr) && stagingTexture)
+                {
+                    m_Device->DeviceContext->CopyResource(stagingTexture.Get(), sourceTexture.Get());
+                    D3D11_MAPPED_SUBRESOURCE mapped{};
+                    if (SUCCEEDED(m_Device->DeviceContext->Map(stagingTexture.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+                    {
+                        m_FrameBuffer->publish(sourceDescription.Width, sourceDescription.Height,
+                            sourceDescription.Format, mapped.pData, mapped.RowPitch);
+                        m_Device->DeviceContext->Unmap(stagingTexture.Get(), 0);
+                    }
+                }
+            }
 
             // We have finished processing this frame hence we release the reference on it.
             // If the driver forgets to release the reference to the surface, it will be leaked which results in the
@@ -473,7 +507,8 @@ void SwapChainProcessor::RunCore()
 #pragma region IndirectDeviceContext
 
 IndirectDeviceContext::IndirectDeviceContext(_In_ WDFDEVICE WdfDevice) :
-    m_WdfDevice(WdfDevice)
+    m_WdfDevice(WdfDevice),
+    m_FrameBuffer(std::make_shared<DisplayFrameBuffer>())
 {
     m_Adapter = {};
 }
@@ -590,7 +625,7 @@ void IndirectDeviceContext::FinishInit(UINT ConnectorIndex)
     {
         // Create a new monitor context object and attach it to the Idd monitor object
         auto* pMonitorContextWrapper = WdfObjectGet_IndirectMonitorContextWrapper(MonitorCreateOut.MonitorObject);
-        pMonitorContextWrapper->pContext = new IndirectMonitorContext(MonitorCreateOut.MonitorObject);
+        pMonitorContextWrapper->pContext = new IndirectMonitorContext(MonitorCreateOut.MonitorObject, m_FrameBuffer);
 
         // Tell the OS that the monitor has been plugged in
         IDARG_OUT_MONITORARRIVAL ArrivalOut;
@@ -598,8 +633,10 @@ void IndirectDeviceContext::FinishInit(UINT ConnectorIndex)
     }
 }
 
-IndirectMonitorContext::IndirectMonitorContext(_In_ IDDCX_MONITOR Monitor) :
-    m_Monitor(Monitor)
+IndirectMonitorContext::IndirectMonitorContext(_In_ IDDCX_MONITOR Monitor,
+    std::shared_ptr<DisplayFrameBuffer> FrameBuffer) :
+    m_Monitor(Monitor),
+    m_FrameBuffer(std::move(FrameBuffer))
 {
 }
 
@@ -622,7 +659,7 @@ void IndirectMonitorContext::AssignSwapChain(IDDCX_SWAPCHAIN SwapChain, LUID Ren
     else
     {
         // Create a new swap-chain processing thread
-        m_ProcessingThread.reset(new SwapChainProcessor(SwapChain, Device, NewFrameEvent));
+        m_ProcessingThread.reset(new SwapChainProcessor(SwapChain, Device, NewFrameEvent, m_FrameBuffer));
     }
 }
 
