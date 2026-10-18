@@ -63,6 +63,7 @@ export function App() {
   const [transferProgress, setTransferProgress] = useState<RemoteTransferProgress | null>(null);
   const [inputDiagnostic, setInputDiagnostic] = useState<InputDiagnostic | null>(null);
   const lastPortalMove = useRef(0);
+  const portalSendQueue = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     invoke<LocalStatus>("get_local_status")
@@ -291,8 +292,12 @@ export function App() {
 
   async function sendPortalInput(event: object) {
     if (!pairingResult || !remoteWindowFrame) return;
-    try { await invoke("send_window_portal_input", { peerDeviceId: pairingResult.peer_device_id, sourceStreamId: remoteWindowFrame.stream_id, event }); }
-    catch (reason) { setWindowStreamError(String(reason)); }
+    const peerDeviceId = pairingResult.peer_device_id;
+    const sourceStreamId = remoteWindowFrame.stream_id;
+    portalSendQueue.current = portalSendQueue.current.then(async () => {
+      await invoke("send_window_portal_input", { peerDeviceId, sourceStreamId, event });
+    }).catch((reason: unknown) => { setWindowStreamError(String(reason)); });
+    await portalSendQueue.current;
   }
 
   async function disconnectPeer() {

@@ -83,6 +83,8 @@ struct PairingInner {
     window_share_stops: Mutex<HashMap<String, Arc<AtomicBool>>>,
     window_share_targets: Mutex<HashMap<String, (u64, u64)>>,
     window_control_streams: Mutex<HashMap<String, (u64, u64)>>,
+    window_portal_held: Mutex<HashMap<String, Vec<WindowPortalInput>>>,
+    window_control_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 struct AbortChildrenOnDrop(Vec<tokio::task::AbortHandle>);
@@ -168,6 +170,24 @@ enum WindowPortalInput {
     PointerButton { x: u16, y: u16, button: u8, down: bool },
     PointerWheel { x: u16, y: u16, delta: i32, horizontal: bool },
     Key { virtual_key: u16, scan_code: u16, extended: bool, down: bool },
+}
+
+impl WindowPortalInput {
+    fn transition(&self) -> Option<(String, bool)> {
+        match self {
+            Self::PointerButton { button, down, .. } => Some((format!("button:{button}"), *down)),
+            Self::Key { virtual_key, scan_code, down, .. } => Some((format!("key:{virtual_key}:{scan_code}"), *down)),
+            Self::PointerMove { .. } | Self::PointerWheel { .. } => None,
+        }
+    }
+
+    fn released(&self) -> Option<Self> {
+        match self {
+            Self::PointerButton { x, y, button, .. } => Some(Self::PointerButton { x: *x, y: *y, button: *button, down: false }),
+            Self::Key { virtual_key, scan_code, extended, .. } => Some(Self::Key { virtual_key: *virtual_key, scan_code: *scan_code, extended: *extended, down: false }),
+            Self::PointerMove { .. } | Self::PointerWheel { .. } => None,
+        }
+    }
 }
 
 static NEXT_PAIRING_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -793,6 +813,7 @@ async fn start_window_share(
                 active.remove(&task_peer);
             }
         }
+        release_window_portal_inputs(&task_pairing, &task_peer);
         if let Ok(mut targets) = task_pairing.window_share_targets.lock() {
             if targets.get(&task_peer).is_some_and(|current| *current == (stream_id, hwnd)) {
                 targets.remove(&task_peer);
@@ -881,6 +902,11 @@ async fn send_window_portal_input(
     event: WindowPortalInput,
     pairing: tauri::State<'_, PairingState>,
 ) -> Result<(), String> {
+    let send_lock = {
+        let mut locks = pairing.0.window_control_locks.lock().map_err(|_| "window-control state is unavailable")?;
+        locks.entry(peer_device_id.clone()).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))).clone()
+    };
+    let _send_guard = send_lock.lock().await;
     let latest = pairing.0.window_frames.lock().map_err(|_| "window preview state is unavailable")?.get(&peer_device_id).cloned().ok_or("no approved live preview")?;
     if latest.stream_id != source_stream_id || latest.received_at_unix_ms.saturating_add(1500) < now_unix_ms() {
         return Err("the live preview is stale or belongs to another stream".into());
@@ -903,6 +929,46 @@ async fn send_window_portal_input(
 
 fn now_unix_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn inject_portal_event(hwnd: u64, event: &WindowPortalInput) -> Result<(), String> {
+    let result = match event {
+        WindowPortalInput::PointerMove { x, y } => unified_workspace_agent::windows_input::inject_into_window(hwnd, InputKind::PointerMove, 0, *x, *y, 0, 0, 0),
+        WindowPortalInput::PointerButton { x, y, button, down } => unified_workspace_agent::windows_input::inject_into_window(hwnd, InputKind::PointerButton, u32::from(*button), *x, *y, i32::from(*down), 0, 0),
+        WindowPortalInput::PointerWheel { x, y, delta, horizontal } => unified_workspace_agent::windows_input::inject_into_window(hwnd, InputKind::PointerWheel, 0, *x, *y, *delta, if *horizontal { 1 << 1 } else { 0 }, 0),
+        WindowPortalInput::Key { virtual_key, scan_code, extended, down } => unified_workspace_agent::windows_input::inject_into_window(hwnd, InputKind::Key, u32::from(*virtual_key), 0, 0, i32::from(*down), if *extended { 1 << 2 } else { 0 }, u32::from(*scan_code)),
+    };
+    result.map_err(|error| error.to_string())
+}
+
+fn dispatch_portal_event(pairing: &PairingInner, peer: &str, hwnd: u64, event: &WindowPortalInput) -> Result<(), String> {
+    let mut held_by_peer = pairing.window_portal_held.lock().map_err(|_| "window input state is unavailable")?;
+    let held = held_by_peer.entry(peer.to_owned()).or_default();
+    validate_portal_transition(held, event)?;
+    inject_portal_event(hwnd, event)?;
+    if let Some((id, down)) = event.transition() {
+        if down { held.push(event.clone()); }
+        else { held.retain(|current| current.transition().is_none_or(|(held_id, _)| held_id != id)); }
+    }
+    Ok(())
+}
+
+fn validate_portal_transition(held: &[WindowPortalInput], event: &WindowPortalInput) -> Result<(), String> {
+    if let Some((id, down)) = event.transition() {
+        let already_held = held.iter().filter_map(WindowPortalInput::transition).any(|(held_id, _)| held_id == id);
+        if (down && already_held) || (!down && !already_held) { return Err("unbalanced remote key/button transition".into()); }
+    }
+    Ok(())
+}
+
+fn release_window_portal_inputs(pairing: &PairingInner, peer: &str) {
+    let target = pairing.window_share_targets.lock().ok().and_then(|targets| targets.get(peer).copied());
+    let Some((_, hwnd)) = target else { return; };
+    let Ok(mut held_by_peer) = pairing.window_portal_held.lock() else { return; };
+    let Some(held) = held_by_peer.remove(peer) else { return; };
+    for event in held.iter().filter_map(WindowPortalInput::released) {
+        let _ = inject_portal_event(hwnd, &event);
+    }
 }
 
 fn validate_window_preview_frame(
@@ -1105,11 +1171,13 @@ async fn activate_session(
     let window_video_task = tokio::spawn(async move {
         let mut approved_stream = None;
         let mut denied_stream = None;
+        let mut control_times = std::collections::VecDeque::<std::time::Instant>::new();
         while let Some(bytes) = window_frames.recv().await {
             let frame = match media_receiver.accept(&bytes) {
                 Ok(frame) if frame.codec == VideoCodec::WindowControl => {
                     match serde_json::from_slice::<WindowControlAction>(&frame.payload) {
                         Ok(WindowControlAction::Stop) => {
+                            release_window_portal_inputs(&window_pairing, &window_peer);
                             if let Ok(mut shares) = window_pairing.window_share_stops.lock() {
                                 if let Some(stop) = shares.remove(&window_peer) {
                                     stop.store(true, Ordering::Release);
@@ -1119,15 +1187,13 @@ async fn activate_session(
                             continue;
                         }
                         Ok(WindowControlAction::Input { source_stream_id, event }) => {
+                            let now = std::time::Instant::now();
+                            while control_times.front().is_some_and(|time| now.duration_since(*time) >= std::time::Duration::from_secs(1)) { control_times.pop_front(); }
+                            if control_times.len() >= 180 { let _ = window_app.emit("window-stream-error", "remote window input rate limit exceeded"); continue; }
+                            control_times.push_back(now);
                             let target = window_pairing.window_share_targets.lock().ok().and_then(|targets| targets.get(&window_peer).copied());
                             if let Some((_, hwnd)) = target.filter(|(active_stream, _)| *active_stream == source_stream_id) {
-                                let result = match event {
-                                    WindowPortalInput::PointerMove { x, y } => unified_workspace_agent::windows_input::inject_into_window(hwnd, InputKind::PointerMove, 0, x, y, 0, 0, 0),
-                                    WindowPortalInput::PointerButton { x, y, button, down } => unified_workspace_agent::windows_input::inject_into_window(hwnd, InputKind::PointerButton, u32::from(button), x, y, i32::from(down), 0, 0),
-                                    WindowPortalInput::PointerWheel { x, y, delta, horizontal } => unified_workspace_agent::windows_input::inject_into_window(hwnd, InputKind::PointerWheel, 0, x, y, delta, if horizontal { 1 << 1 } else { 0 }, 0),
-                                    WindowPortalInput::Key { virtual_key, scan_code, extended, down } => unified_workspace_agent::windows_input::inject_into_window(hwnd, InputKind::Key, u32::from(virtual_key), 0, 0, i32::from(down), if extended { 1 << 2 } else { 0 }, u32::from(scan_code)),
-                                };
-                                if let Err(error) = result { let _ = window_app.emit("window-stream-error", format!("remote window input rejected: {error}")); }
+                                if let Err(error) = dispatch_portal_event(&window_pairing, &window_peer, hwnd, &event) { let _ = window_app.emit("window-stream-error", format!("remote window input rejected: {error}")); }
                             } else {
                                 let _ = window_app.emit("window-stream-error", "remote input rejected: no matching consented capture target");
                             }
@@ -1199,6 +1265,7 @@ async fn activate_session(
                 stored.insert(window_peer.clone(), latest);
             }
         }
+        release_window_portal_inputs(&window_pairing, &window_peer);
         if let Ok(mut stored) = window_pairing.window_frames.lock() {
             stored.remove(&window_peer);
         }
@@ -1228,6 +1295,7 @@ async fn activate_session(
     }
     tokio::spawn(async move {
         let _ = task.await;
+        release_window_portal_inputs(&session_pairing, &peer_for_task);
         if let Ok(mut active) = session_pairing.active.lock() {
             active.remove(&peer_for_task);
         }
@@ -1243,6 +1311,7 @@ async fn activate_session(
         if let Ok(mut contexts) = session_pairing.media_contexts.lock() {
             contexts.remove(&peer_for_task);
         }
+        if let Ok(mut locks) = session_pairing.window_control_locks.lock() { locks.remove(&peer_for_task); }
         if let Ok(mut shares) = session_pairing.window_share_stops.lock() {
             if let Some(stop) = shares.remove(&peer_for_task) {
                 stop.store(true, Ordering::Release);
@@ -1967,5 +2036,15 @@ mod tests {
         assert_eq!(value["event"]["kind"], "pointer_button");
         assert_eq!(value["event"]["y"], 65535);
         assert!(serde_json::from_value::<WindowControlAction>(serde_json::json!({"action":"input","source_stream_id":42,"event":{"kind":"launch_process"}})).is_err());
+    }
+
+    #[test]
+    fn portal_input_requires_balanced_button_and_key_transitions() {
+        let down = WindowPortalInput::PointerButton { x: 10, y: 20, button: 1, down: true };
+        let up = WindowPortalInput::PointerButton { x: 10, y: 20, button: 1, down: false };
+        assert!(validate_portal_transition(&[], &down).is_ok());
+        assert!(validate_portal_transition(std::slice::from_ref(&down), &down).is_err());
+        assert!(validate_portal_transition(&[], &up).is_err());
+        assert!(validate_portal_transition(&[down], &up).is_ok());
     }
 }

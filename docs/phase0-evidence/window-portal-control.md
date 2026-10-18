@@ -14,16 +14,17 @@
 
 ## Local validation
 
-- Rust agent: 65 tests passed; Tauri desktop: 6 tests passed.
+- Rust agent: 65 tests passed; Tauri desktop: 7 tests passed.
 - Agent and Tauri Clippy with warnings denied passed.
 - Native CMake Release build passed; CTest contract: 1/1 passed (including invalid target/action rejection without injecting desktop input).
 - Frontend TypeScript check and Vite production build passed.
-- A v6 NSIS test installer was built at `artifacts/window-portal-v6/CrossWarp_0.1.0_x64-setup.exe`: 2,894,519 bytes; SHA-256 `559A6A36EB226A4371931568D35D77DDC33C629E470F79AE4619F858EC95DC55`; Authenticode `NotSigned`.\n- No user input was synthesized during validation.
+- A v6 NSIS test installer was built at `artifacts/window-portal-v6/CrossWarp_0.1.0_x64-setup.exe`: 2,902,769 bytes; SHA-256 `E010779B3AC15336E21DBEDAEF63AC34DC0F2420F0146C91AF004131A478A30E`; Authenticode `NotSigned`.
+- No user input was synthesized during validation.
 
 ## Not proven / known follow-up
 
 - No paired physical PCs have run the matching v6 build; browser text entry, scrolling, pointer mapping, latency, or event ordering are not physically verified.
 - No display driver or shared input feature is integrated; concurrent four-feature acceptance remains 0/4.
-- The current implementation can still lose a release event on abrupt network teardown. Add held-input reconciliation and a remote rescue path before production acceptance.
+- Button/key transitions are balanced; the sender queues events in UI order; the receiver caps controls at 180 events per second; stop/disconnect attempts to release held keys/buttons. Verify release behavior on physical PCs and add a local rescue path before production acceptance.
 - Foreground activation may be denied by Windows; in that case the bridge refuses injection. Elevated/UAC/secure desktop and protected windows remain unsupported.
 - Broad Windows-version support and mixed-version pairs remain unverified.
