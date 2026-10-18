@@ -1,6 +1,6 @@
 # Per-window capture smoke test
 
-This Windows 10 1903+ / Windows 11 console spike uses `IGraphicsCaptureItemInterop::CreateForWindow`, `Direct3D11CaptureFramePool::CreateFreeThreaded`, and D3D11 to acquire one window frame and write a BMP. It does not stream the frame or inject remote input. Target only a window you own or are authorized to capture; production needs an explicit per-window consent flow and must surface Windows capture/security restrictions.
+This Windows 10 1903+ / Windows 11 console spike uses `IGraphicsCaptureItemInterop::CreateForWindow`, `Direct3D11CaptureFramePool::CreateFreeThreaded`, and D3D11 to acquire one frame or a bounded burst of up to 16 changed frames and write BMP samples. A burst is limited to 256 MiB of retained CPU frame data and times out after 10 seconds. It is a capture diagnostic, not the product's network stream or remote window proxy, and it does not inject remote input. Target only a window you own or are authorized to capture; production needs an explicit per-window consent flow and must surface Windows capture/security restrictions.
 
 Build with Visual Studio 2022 and Windows SDK 26100:
 
@@ -17,4 +17,6 @@ $hwnd = '0x{0:X}' -f [Int64]$p.MainWindowHandle
 .\artifacts\capture-smoke-build\Release\window-capture-smoke.exe $hwnd artifacts\capture.bmp
 ```
 
-It waits at most 10 seconds for a frame. A timeout may mean that Windows or the target app blocks capture. Do not interpret a successful local frame as evidence of cross-PC window presentation or input routing.
+For a changed-frame burst, pass a frame count from 1 to 16. When more than one frame is requested, the output argument is treated as a filename prefix and numbered BMP files are written. The repository's `animated_test_window.ps1` creates a small, self-closing WinForms fixture for this test. The capture waits at most 10 seconds for the requested number of frames; static content may produce fewer frame-arrival events than an animated target.
+
+Do not interpret a successful local capture as evidence of cross-PC window presentation or input routing.

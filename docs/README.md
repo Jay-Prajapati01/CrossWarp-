@@ -44,6 +44,7 @@ This page is the map for the project documentation. Read the product specificati
 
 - [Phase 0: IDD sample build](phase0-evidence/IDD-sample-build.md)
 - [Phase 0: local WGC window-capture smoke](phase0-evidence/wgc-capture-smoke.md)
+- [Phase 0: changed-frame burst capture proof](phase0-evidence/wgc-burst-capture.md)
 - [Phase 1: authenticated stream](phase1-evidence/authenticated-stream.md)
 - [Phase 1: trust and peer storage](phase1-evidence/trusted-peer-store.md)
 - [Phase 1: trusted reconnect](phase1-evidence/trusted-reconnect.md)
@@ -56,6 +57,7 @@ This page is the map for the project documentation. Read the product specificati
 - [Phase 1: local input capture diagnostic](phase1-evidence/input-capture-diagnostic.md)
 - [Phase 1: native input coordinate mapping](phase1-evidence/input-coordinate-mapping.md)
 - [Phase 1: protocol-v4 Windows package build](phase1-evidence/protocol-v4-package-build.md)
+- [Live LAN observation and local checks (2026-10-18)](phase1-evidence/live-lan-observation-2026-10-18.md)
 - [Phase 1: typed media session](phase1-evidence/media-session.md)
 - [Historical installer smoke](phase1-evidence/installer-smoke.md)
 

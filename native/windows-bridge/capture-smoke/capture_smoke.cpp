@@ -54,6 +54,8 @@ struct BitmapInfoHeader {
 static_assert(sizeof(BitmapFileHeader) == 14);
 static_assert(sizeof(BitmapInfoHeader) == 40);
 
+static constexpr uint64_t MAX_RETAINED_FRAME_BYTES = 256ull * 1024ull * 1024ull;
+
 static com_ptr<ID3D11Device> make_d3d_device() {
     com_ptr<ID3D11Device> device;
     com_ptr<ID3D11DeviceContext> context;
@@ -117,8 +119,8 @@ static void write_bmp(const std::wstring& path, int width, int height, const std
 }
 
 int wmain(int argc, wchar_t** argv) {
-    if (argc != 3) {
-        std::wcerr << L"Usage: window-capture-smoke.exe <HWND> <output.bmp>\n"
+    if (argc < 3 || argc > 4) {
+        std::wcerr << L"Usage: window-capture-smoke.exe <HWND> <output.bmp|prefix> [frame-count 1..16]\n"
                    << L"Capture only a window you own or have explicit permission to capture.\n";
         return 2;
     }
@@ -126,6 +128,10 @@ int wmain(int argc, wchar_t** argv) {
     try {
         const auto rawWindow = std::wcstoull(argv[1], nullptr, 0);
         HWND window = reinterpret_cast<HWND>(static_cast<uintptr_t>(rawWindow));
+        const int requestedFrames = argc == 4 ? std::stoi(argv[3]) : 1;
+        if (requestedFrames < 1 || requestedFrames > 16) {
+            throw std::runtime_error("frame-count must be between 1 and 16 to keep capture memory bounded");
+        }
         if (!IsWindow(window) || !IsWindowVisible(window)) {
             throw std::runtime_error("HWND is not a visible window");
         }
@@ -143,6 +149,12 @@ int wmain(int argc, wchar_t** argv) {
         if (size.Width <= 0 || size.Height <= 0 || size.Width > 16384 || size.Height > 16384) {
             throw std::runtime_error("capture item reports an invalid size");
         }
+        const auto bytesPerFrame = static_cast<uint64_t>(size.Width) *
+            static_cast<uint64_t>(size.Height) * 4ull;
+        if (bytesPerFrame > MAX_RETAINED_FRAME_BYTES ||
+            static_cast<uint64_t>(requestedFrames) > MAX_RETAINED_FRAME_BYTES / bytesPerFrame) {
+            throw std::runtime_error("requested burst exceeds the 256 MiB retained-frame limit");
+        }
 
         D3D11_TEXTURE2D_DESC stagingDesc{};
         stagingDesc.Width = static_cast<UINT>(size.Width);
@@ -159,14 +171,14 @@ int wmain(int argc, wchar_t** argv) {
         std::mutex contextMutex;
         std::mutex resultMutex;
         std::condition_variable ready;
-        bool captured = false;
-        std::vector<uint8_t> pixels;
+        std::vector<std::vector<uint8_t>> frames;
+        frames.reserve(static_cast<size_t>(requestedFrames));
         auto pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
             captureDevice, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, size);
         auto session = pool.CreateCaptureSession(item);
         auto token = pool.FrameArrived([&](const Direct3D11CaptureFramePool& sender, const winrt::Windows::Foundation::IInspectable&) {
             std::unique_lock resultLock(resultMutex);
-            if (captured) return;
+            if (frames.size() >= static_cast<size_t>(requestedFrames)) return;
             auto frame = sender.TryGetNextFrame();
             if (!frame) return;
             auto access = frame.Surface().as<::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
@@ -182,7 +194,7 @@ int wmain(int argc, wchar_t** argv) {
                 std::scoped_lock lock(contextMutex);
                 context->CopyResource(staging.get(), source.get());
                 if (FAILED(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped))) return;
-                pixels.resize(static_cast<size_t>(size.Width) * size.Height * 4);
+                std::vector<uint8_t> pixels(static_cast<size_t>(bytesPerFrame));
                 for (int row = 0; row < size.Height; ++row) {
                     std::memcpy(
                         pixels.data() + static_cast<size_t>(row) * size.Width * 4,
@@ -190,24 +202,40 @@ int wmain(int argc, wchar_t** argv) {
                         static_cast<size_t>(size.Width) * 4);
                 }
                 context->Unmap(staging.get(), 0);
+                frames.push_back(std::move(pixels));
             }
-            captured = true;
-            resultLock.unlock();
-            ready.notify_one();
+            if (frames.size() >= static_cast<size_t>(requestedFrames)) ready.notify_one();
         });
 
+        const auto captureStarted = std::chrono::steady_clock::now();
         session.StartCapture();
         {
             std::unique_lock lock(resultMutex);
-            if (!ready.wait_for(lock, std::chrono::seconds(10), [&] { return captured; })) {
-                throw std::runtime_error("no frame arrived within 10 seconds (window may be protected or capture-blocked)");
+            if (!ready.wait_for(lock, std::chrono::seconds(10), [&] {
+                    return frames.size() >= static_cast<size_t>(requestedFrames);
+                })) {
+                throw std::runtime_error("requested live frames did not arrive within 10 seconds (window may be protected, capture-blocked, or resizing)");
             }
         }
         session.Close();
         pool.FrameArrived(token);
         pool.Close();
-        write_bmp(argv[2], size.Width, size.Height, pixels);
-        std::wcout << L"CAPTURED hwnd=" << argv[1] << L" size=" << size.Width << L"x" << size.Height
+        const auto elapsed = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - captureStarted).count();
+        for (int index = 0; index < requestedFrames; ++index) {
+            std::wstring path(argv[2]);
+            if (requestedFrames > 1) {
+                const auto extension = path.find_last_of(L'.');
+                const auto insertAt = extension == std::wstring::npos ? path.size() : extension;
+                wchar_t suffix[16]{};
+                swprintf_s(suffix, L"-%04d", index);
+                path.insert(insertAt, suffix);
+            }
+            write_bmp(path, size.Width, size.Height, frames[static_cast<size_t>(index)]);
+        }
+        std::wcout << L"CAPTURED hwnd=" << argv[1] << L" frames=" << requestedFrames
+                   << L" size=" << size.Width << L"x" << size.Height
+                   << L" seconds=" << elapsed << L" fps=" << (requestedFrames / elapsed)
                    << L" output=" << argv[2] << L"\n";
         return 0;
     } catch (const hresult_error& error) {
