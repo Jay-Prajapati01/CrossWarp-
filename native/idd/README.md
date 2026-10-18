@@ -1,6 +1,6 @@
 # CrossWarp indirect display driver work
 
-**Status: feasibility spike only.** The repository builds Microsoft's IddSampleDriver and generates an unsigned catalog-bearing package. This is not CrossWarp's production IDD; it is not signed, installed, or loaded and does not create a usable CrossWarp extended display.
+**Status: feasibility spike only.** The repository builds Microsoft's IddSampleDriver and generates an unsigned catalog-bearing package. This is not CrossWarp's production IDD; it is not signed, installed, or loaded and does not create a usable CrossWarp extended display. The sample INF's OS decoration has been lowered to Windows 10 build 17134 (1803), matching the documented lower bound of the IddCx 1.4+ multi-version model and UMDF 2.25. This is a packaging declaration, not proof that the sample installs or runs on Windows 10; physical and INF validation across that range are still required.
 
 The product requirement is a real Windows logical monitor in Extend topology. The intended architecture uses a supported UMDF IddCx driver for monitor/swapchain duties and keeps app UI, networking, and encoding in the user session. A stream shown in a normal window is not an extended monitor.
 

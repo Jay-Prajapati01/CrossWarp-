@@ -8,6 +8,11 @@ This log summarizes repository milestones for maintainers. Git history is the so
 - Confirmed from Microsoft documentation and the installed WDK header that the IDD's `EvtIddCxDeviceIoControl` is the supported user-session-to-driver callback. Recorded it as the boundary for a frame-bridge feasibility spike; no driver frame export or driver load is claimed.
 - Updated user-facing setup and troubleshooting pages to require matching protocol-v6 peers.
 
+## 2026-10-18 — IDD Windows 10 target packaging spike
+
+- Changed the Microsoft sample INF's OS decoration from Windows build 22000 to 17134, aligning its declared package floor with the documented Windows 10 1803+ IddCx/UMDF candidate path.
+- Rebuilt the x64 Release sample; driver and app compile/link passed, Inf2Cat signability reported zero errors/warnings, and an unsigned catalog was generated. The driver still drops frames, remains unsigned/unloaded, and has not been tested on Windows 10 hardware. See [IDD Windows 10 target evidence](phase0-evidence/idd-windows10-target-spike.md).
+
 ## Current development line
 
 ### Shared authenticated-session identity (current working increment)

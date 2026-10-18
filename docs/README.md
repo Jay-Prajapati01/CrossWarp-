@@ -44,6 +44,7 @@ This page is the map for the project documentation. Read the product specificati
 ### Evidence logs
 
 - [Phase 0: IDD sample build](phase0-evidence/IDD-sample-build.md)
+- [Phase 0: IDD Windows 10 target declaration](phase0-evidence/idd-windows10-target-spike.md)
 - [Phase 0: local WGC window-capture smoke](phase0-evidence/wgc-capture-smoke.md)
 - [Phase 0: changed-frame burst capture proof](phase0-evidence/wgc-burst-capture.md)
 - [Phase 0: capture-to-window-lane preview](phase0-evidence/window-capture-preview.md)
