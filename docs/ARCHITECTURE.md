@@ -65,7 +65,7 @@ The target diagram intentionally includes components that are not yet implemente
 | `file_rpc.rs` | Bidirectional request/response file operations over file lane | Desktop client/server worker is wired |
 | `ownership.rs` | Hit testing, focus ownership, held-key/button source ownership | Contract only; not synchronized with desktop surfaces |
 | `input_session.rs` | Ordered input lane envelopes, destination checks, transition validation/release model | Contract tests; not connected to live input forwarding |
-| `windows_input.rs` | Safe Rust wrapper for C ABI Raw Input/SendInput bridge | Used by local diagnostic for capture; injection remains unused |
+| `windows_input.rs` | Safe Rust wrapper for C ABI Raw Input/SendInput bridge | Local diagnostic plus tested native-to-session event conversion; not connected to ownership, transport, suppression or injection |
 | `media_session.rs` | Binary window/display frame metadata and sequencing checks | No capture/encode/decode/render integration |
 | `platform.rs` | Windows build/API-floor reporting | API floor is not support certification |
 

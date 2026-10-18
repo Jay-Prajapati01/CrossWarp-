@@ -54,6 +54,7 @@ This page is the map for the project documentation. Read the product specificati
 - [Phase 1: typed input session](phase1-evidence/input-session.md)
 - [Phase 1: Win32 input bridge](phase1-evidence/input-bridge.md)
 - [Phase 1: local input capture diagnostic](phase1-evidence/input-capture-diagnostic.md)
+- [Phase 1: native input coordinate mapping](phase1-evidence/input-coordinate-mapping.md)
 - [Phase 1: typed media session](phase1-evidence/media-session.md)
 - [Historical installer smoke](phase1-evidence/installer-smoke.md)
 

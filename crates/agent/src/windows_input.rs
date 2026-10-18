@@ -1,12 +1,16 @@
 //! Safe wrapper around the consent-gated Win32 Raw Input and SendInput bridge.
 //! Capture must only be started after the product's explicit input-sharing consent.
 
+use crate::input_session::RoutedInput;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
 const INPUT_QUEUE_CAPACITY: usize = 4096;
 const UW_INPUT_FLAG_ABSOLUTE: u32 = 1;
+const UW_INPUT_FLAG_HORIZONTAL: u32 = 1 << 1;
+const UW_INPUT_FLAG_EXTENDED_KEY: u32 = 1 << 2;
+const UW_INPUT_FLAG_CURSOR_POSITION_VALID: u32 = 1 << 5;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -19,6 +23,8 @@ struct NativeEvent {
     flags: u32,
     scan_code: u32,
     message_time_ms: u32,
+    cursor_x: i32,
+    cursor_y: i32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,6 +46,9 @@ pub struct InputEvent {
     pub flags: u32,
     pub scan_code: u32,
     pub message_time_ms: u32,
+    /// Screen-space pointer location at event time when native metadata is valid.
+    pub cursor_x: i32,
+    pub cursor_y: i32,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -54,6 +63,8 @@ pub enum InputBridgeError {
     InjectionRejected,
     #[error("native input queue overflowed; stop routing and release held inputs")]
     QueueOverflow,
+    #[error("native input event cannot be represented as a routed session event")]
+    UnsupportedRoutedEvent,
 }
 
 type Callback = unsafe extern "system" fn(*const NativeEvent, *mut c_void);
@@ -136,6 +147,69 @@ pub fn inject(event: InputEvent) -> Result<(), InputBridgeError> {
     }
 }
 
+/// Convert native input into the session event contract while preserving
+/// event-time pointer position and keyboard/wheel flags. This conversion does
+/// not choose an owner, suppress local input, or transmit the event.
+pub fn to_routed_input(event: InputEvent) -> Result<RoutedInput, InputBridgeError> {
+    match event.kind {
+        InputKind::PointerMove => {
+            require_cursor_position(event)?;
+            Ok(RoutedInput::PointerMove {
+                x: event.cursor_x,
+                y: event.cursor_y,
+            })
+        }
+        InputKind::PointerButton => {
+            require_cursor_position(event)?;
+            let button = u8::try_from(event.code)
+                .ok()
+                .filter(|button| (1..=5).contains(button))
+                .ok_or(InputBridgeError::UnsupportedRoutedEvent)?;
+            let down = match event.value {
+                0 => false,
+                1 => true,
+                _ => return Err(InputBridgeError::UnsupportedRoutedEvent),
+            };
+            Ok(RoutedInput::PointerButton {
+                button,
+                x: event.cursor_x,
+                y: event.cursor_y,
+                down,
+            })
+        }
+        InputKind::PointerWheel => Ok(RoutedInput::Wheel {
+            delta: event.value,
+            horizontal: event.flags & UW_INPUT_FLAG_HORIZONTAL != 0,
+        }),
+        InputKind::Key => {
+            let virtual_key = u16::try_from(event.code)
+                .ok()
+                .filter(|key| *key <= 0xFF)
+                .ok_or(InputBridgeError::UnsupportedRoutedEvent)?;
+            let scan_code = u16::try_from(event.scan_code)
+                .map_err(|_| InputBridgeError::UnsupportedRoutedEvent)?;
+            let down = match event.value {
+                0 => false,
+                1 => true,
+                _ => return Err(InputBridgeError::UnsupportedRoutedEvent),
+            };
+            Ok(RoutedInput::Key {
+                virtual_key,
+                scan_code,
+                extended: event.flags & UW_INPUT_FLAG_EXTENDED_KEY != 0,
+                down,
+            })
+        }
+    }
+}
+
+fn require_cursor_position(event: InputEvent) -> Result<(), InputBridgeError> {
+    if event.flags & UW_INPUT_FLAG_CURSOR_POSITION_VALID == 0 {
+        return Err(InputBridgeError::UnsupportedRoutedEvent);
+    }
+    Ok(())
+}
+
 unsafe extern "system" fn on_native_event(event: *const NativeEvent, context: *mut c_void) {
     if event.is_null() || context.is_null() {
         return;
@@ -168,6 +242,8 @@ fn from_native(event: NativeEvent) -> Option<InputEvent> {
         flags: event.flags,
         scan_code: event.scan_code,
         message_time_ms: event.message_time_ms,
+        cursor_x: event.cursor_x,
+        cursor_y: event.cursor_y,
     })
 }
 
@@ -200,6 +276,8 @@ fn to_native(event: InputEvent) -> Result<NativeEvent, InputBridgeError> {
         flags: event.flags,
         scan_code: event.scan_code,
         message_time_ms: event.message_time_ms,
+        cursor_x: event.cursor_x,
+        cursor_y: event.cursor_y,
     })
 }
 
@@ -218,7 +296,9 @@ mod tests {
                 value: 1,
                 flags: 0,
                 scan_code: 0,
-                message_time_ms: 0
+                message_time_ms: 0,
+                cursor_x: 0,
+                cursor_y: 0,
             }),
             Err(InputBridgeError::InvalidEvent)
         ));
@@ -231,7 +311,9 @@ mod tests {
                 value: 1,
                 flags: 0,
                 scan_code: 0,
-                message_time_ms: 0
+                message_time_ms: 0,
+                cursor_x: 0,
+                cursor_y: 0,
             }),
             Err(InputBridgeError::InvalidEvent)
         ));
@@ -244,7 +326,9 @@ mod tests {
                 value: 4,
                 flags: 0,
                 scan_code: 0,
-                message_time_ms: 0
+                message_time_ms: 0,
+                cursor_x: 0,
+                cursor_y: 0,
             }),
             Err(InputBridgeError::InvalidEvent)
         ));
@@ -257,7 +341,9 @@ mod tests {
                 value: 0,
                 flags: UW_INPUT_FLAG_ABSOLUTE,
                 scan_code: 0,
-                message_time_ms: 0
+                message_time_ms: 0,
+                cursor_x: 0,
+                cursor_y: 0,
             }),
             Err(InputBridgeError::InvalidEvent)
         ));
@@ -269,8 +355,115 @@ mod tests {
             value: 120,
             flags: 0,
             scan_code: 0,
-            message_time_ms: 0
+            message_time_ms: 0,
+            cursor_x: 0,
+            cursor_y: 0,
         })
         .is_ok());
+    }
+
+    #[test]
+    fn native_events_map_to_routed_events_with_event_time_coordinates() {
+        let pointer = to_routed_input(InputEvent {
+            kind: InputKind::PointerMove,
+            code: 0,
+            x: 1,
+            y: -2,
+            value: 0,
+            flags: UW_INPUT_FLAG_CURSOR_POSITION_VALID,
+            scan_code: 0,
+            message_time_ms: 10,
+            cursor_x: 1920,
+            cursor_y: 350,
+        })
+        .unwrap();
+        assert_eq!(pointer, RoutedInput::PointerMove { x: 1920, y: 350 });
+
+        let click = to_routed_input(InputEvent {
+            kind: InputKind::PointerButton,
+            code: 1,
+            x: 0,
+            y: 0,
+            value: 1,
+            flags: UW_INPUT_FLAG_CURSOR_POSITION_VALID,
+            scan_code: 0,
+            message_time_ms: 11,
+            cursor_x: 1920,
+            cursor_y: 350,
+        })
+        .unwrap();
+        assert_eq!(
+            click,
+            RoutedInput::PointerButton {
+                button: 1,
+                x: 1920,
+                y: 350,
+                down: true,
+            }
+        );
+
+        let key = to_routed_input(InputEvent {
+            kind: InputKind::Key,
+            code: 0xA3,
+            x: 0,
+            y: 0,
+            value: 0,
+            flags: UW_INPUT_FLAG_EXTENDED_KEY,
+            scan_code: 0x1D,
+            message_time_ms: 12,
+            cursor_x: 0,
+            cursor_y: 0,
+        })
+        .unwrap();
+        assert_eq!(
+            key,
+            RoutedInput::Key {
+                virtual_key: 0xA3,
+                scan_code: 0x1D,
+                extended: true,
+                down: false,
+            }
+        );
+
+        let wheel = to_routed_input(InputEvent {
+            kind: InputKind::PointerWheel,
+            code: 0,
+            x: 0,
+            y: 0,
+            value: -120,
+            flags: UW_INPUT_FLAG_HORIZONTAL,
+            scan_code: 0,
+            message_time_ms: 13,
+            cursor_x: 0,
+            cursor_y: 0,
+        })
+        .unwrap();
+        assert_eq!(
+            wheel,
+            RoutedInput::Wheel {
+                delta: -120,
+                horizontal: true
+            }
+        );
+    }
+
+    #[test]
+    fn pointer_events_without_valid_cursor_position_are_not_routable() {
+        let event = InputEvent {
+            kind: InputKind::PointerButton,
+            code: 1,
+            x: 0,
+            y: 0,
+            value: 1,
+            flags: 0,
+            scan_code: 0,
+            message_time_ms: 0,
+            cursor_x: 0,
+            cursor_y: 0,
+        };
+        assert!(matches!(
+            to_routed_input(event),
+            Err(InputBridgeError::UnsupportedRoutedEvent)
+        ));
     }
 }

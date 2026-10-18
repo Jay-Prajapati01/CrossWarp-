@@ -21,6 +21,16 @@ struct uw_input_capture {
 namespace {
 constexpr wchar_t kWindowClass[] = L"UnifiedWorkspace.RawInputSink";
 
+uw_input_event with_cursor(uw_input_event event) noexcept {
+    POINT point{};
+    if (GetCursorPos(&point)) {
+        event.cursor_x = point.x;
+        event.cursor_y = point.y;
+        event.flags |= UW_INPUT_FLAG_CURSOR_POSITION_VALID;
+    }
+    return event;
+}
+
 void publish(uw_input_capture* capture, const uw_input_event& event) noexcept {
     if (capture && capture->callback) {
         try {
@@ -42,14 +52,13 @@ void handle_raw_input(uw_input_capture* capture, HRAWINPUT raw) {
     if (input->header.dwType == RIM_TYPEMOUSE) {
         const auto& mouse = input->data.mouse;
         if (mouse.lLastX != 0 || mouse.lLastY != 0 || (mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) {
-            uw_input_event event{UW_INPUT_POINTER_MOVE, 0, mouse.lLastX, mouse.lLastY, 0,
-                (mouse.usFlags & MOUSE_MOVE_ABSOLUTE) ? UW_INPUT_FLAG_ABSOLUTE : 0u, 0, time};
-            publish(capture, event);
+            publish(capture, with_cursor({UW_INPUT_POINTER_MOVE, 0, mouse.lLastX, mouse.lLastY, 0,
+                (mouse.usFlags & MOUSE_MOVE_ABSOLUTE) ? UW_INPUT_FLAG_ABSOLUTE : 0u, 0, time}));
         }
         const USHORT flags = mouse.usButtonFlags;
         const auto button = [&](USHORT down_flag, USHORT up_flag, uint32_t number) {
-            if (flags & down_flag) publish(capture, {UW_INPUT_POINTER_BUTTON, number, 0, 0, 1, 0, 0, time});
-            if (flags & up_flag) publish(capture, {UW_INPUT_POINTER_BUTTON, number, 0, 0, 0, 0, 0, time});
+            if (flags & down_flag) publish(capture, with_cursor({UW_INPUT_POINTER_BUTTON, number, 0, 0, 1, 0, 0, time}));
+            if (flags & up_flag) publish(capture, with_cursor({UW_INPUT_POINTER_BUTTON, number, 0, 0, 0, 0, 0, time}));
         };
         button(RI_MOUSE_BUTTON_1_DOWN, RI_MOUSE_BUTTON_1_UP, 1);
         button(RI_MOUSE_BUTTON_2_DOWN, RI_MOUSE_BUTTON_2_UP, 2);
@@ -57,9 +66,9 @@ void handle_raw_input(uw_input_capture* capture, HRAWINPUT raw) {
         button(RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_UP, 4);
         button(RI_MOUSE_BUTTON_5_DOWN, RI_MOUSE_BUTTON_5_UP, 5);
         if (flags & (RI_MOUSE_WHEEL | RI_MOUSE_HWHEEL)) {
-            publish(capture, {UW_INPUT_POINTER_WHEEL, 0, 0, 0,
+            publish(capture, with_cursor({UW_INPUT_POINTER_WHEEL, 0, 0, 0,
                 static_cast<SHORT>(mouse.usButtonData),
-                (flags & RI_MOUSE_HWHEEL) ? UW_INPUT_FLAG_HORIZONTAL : 0u, 0, time});
+                (flags & RI_MOUSE_HWHEEL) ? UW_INPUT_FLAG_HORIZONTAL : 0u, 0, time}));
         }
         return;
     }
@@ -70,8 +79,8 @@ void handle_raw_input(uw_input_capture* capture, HRAWINPUT raw) {
         if (keyboard.Flags & RI_KEY_E0) flags |= UW_INPUT_FLAG_EXTENDED_KEY;
         if (keyboard.Flags & RI_KEY_E1) flags |= UW_INPUT_FLAG_E1_KEY;
         const bool key_up = (keyboard.Flags & RI_KEY_BREAK) != 0;
-        publish(capture, {UW_INPUT_KEY, keyboard.VKey, 0, 0, key_up ? 0 : 1, flags,
-            keyboard.MakeCode, time});
+        publish(capture, with_cursor({UW_INPUT_KEY, keyboard.VKey, 0, 0, key_up ? 0 : 1, flags,
+            keyboard.MakeCode, time}));
     }
 }
 

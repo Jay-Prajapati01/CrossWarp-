@@ -31,6 +31,7 @@ enum {
     UW_INPUT_FLAG_EXTENDED_KEY = 1u << 2,
     UW_INPUT_FLAG_PREVIOUS_KEY_STATE = 1u << 3,
     UW_INPUT_FLAG_E1_KEY = 1u << 4,
+    UW_INPUT_FLAG_CURSOR_POSITION_VALID = 1u << 5,
 };
 
 typedef struct uw_input_event {
@@ -42,6 +43,8 @@ typedef struct uw_input_event {
     uint32_t flags;
     uint32_t scan_code;
     uint32_t message_time_ms;
+    int32_t cursor_x;      /* screen-space pointer position at event time */
+    int32_t cursor_y;
 } uw_input_event;
 
 typedef void (UW_INPUT_CALL *uw_input_event_callback)(const uw_input_event* event, void* context);

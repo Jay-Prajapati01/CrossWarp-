@@ -6,6 +6,8 @@ The host must obtain explicit user consent before calling `uw_input_capture_star
 
 `uw_input_inject` uses relative mouse movement unless `UW_INPUT_FLAG_ABSOLUTE` is set. Absolute coordinates are expected to use Win32's normalized 0–65535 virtual-desktop range. Keyboard events carry a virtual-key code, scan code, and up/down state. UIPI may block injection into a higher-integrity process; Windows may not identify UIPI through `GetLastError`. Elevated desktops, UAC secure desktop, protected sessions, and other Windows security boundaries remain unsupported by this bridge.
 
+The event ABI includes a best-effort screen-space cursor position and a validity flag for each captured event. Rust's `to_routed_input` adapter preserves that position for hit testing and retains extended-key and horizontal-wheel metadata. It is a tested conversion boundary only: the resulting event is not yet passed through `InputRouter`, sent to the peer, or injected remotely. See [coordinate mapping evidence](../../../docs/phase1-evidence/input-coordinate-mapping.md).
+
 ## Build and contract check
 
 ```powershell
