@@ -12,7 +12,7 @@ This is a user-readable summary. Detailed evidence, exact test counts, blockers,
 
 **Built:** typed input events, session/device/sequence validation, lane framing, surface ownership model, balanced key/button transitions, disconnect release representation, a Windows Raw Input/SendInput bridge, and a local opt-in Raw Input diagnostic that displays aggregate event-type counts. Native input records now include event-time screen coordinates; a Windows adapter maps move, button, vertical/horizontal wheel, and extended-key records into the typed session contract.
 
-**Verified:** 57 agent tests pass, including native-to-session event conversion and rejection of pointer events without a valid cursor position; native bridge rebuilds and its invalid-argument contract test passes; desktop diagnostic compiles and reports aggregate counters by unit test. See [input coordinate mapping evidence](phase1-evidence/input-coordinate-mapping.md).
+**Verified:** 58 agent tests pass, including native-to-session event conversion and rejection of pointer events without a valid cursor position; native bridge rebuilds and its invalid-argument contract test passes; desktop diagnostic compiles and reports aggregate counters by unit test. See [input coordinate mapping evidence](phase1-evidence/input-coordinate-mapping.md).
 
 **Not built or proved:** live ownership surface registration, input suppression over remote-owned surfaces, event routing from the native callback into the session, remote receiving/injection, consent on both devices for sharing, clipboard integration, real disconnect release delivery, or cross-PC input. The current diagnostic deliberately does not share input and must not be counted as the feature.
 

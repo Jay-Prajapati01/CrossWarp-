@@ -177,10 +177,15 @@ pub fn to_routed_input(event: InputEvent) -> Result<RoutedInput, InputBridgeErro
                 down,
             })
         }
-        InputKind::PointerWheel => Ok(RoutedInput::Wheel {
-            delta: event.value,
-            horizontal: event.flags & UW_INPUT_FLAG_HORIZONTAL != 0,
-        }),
+        InputKind::PointerWheel => {
+            require_cursor_position(event)?;
+            Ok(RoutedInput::Wheel {
+                delta: event.value,
+                horizontal: event.flags & UW_INPUT_FLAG_HORIZONTAL != 0,
+                x: event.cursor_x,
+                y: event.cursor_y,
+            })
+        }
         InputKind::Key => {
             let virtual_key = u16::try_from(event.code)
                 .ok()
@@ -431,18 +436,20 @@ mod tests {
             x: 0,
             y: 0,
             value: -120,
-            flags: UW_INPUT_FLAG_HORIZONTAL,
+            flags: UW_INPUT_FLAG_HORIZONTAL | UW_INPUT_FLAG_CURSOR_POSITION_VALID,
             scan_code: 0,
             message_time_ms: 13,
-            cursor_x: 0,
-            cursor_y: 0,
+            cursor_x: 1920,
+            cursor_y: 350,
         })
         .unwrap();
         assert_eq!(
             wheel,
             RoutedInput::Wheel {
                 delta: -120,
-                horizontal: true
+                horizontal: true,
+                x: 1920,
+                y: 350,
             }
         );
     }

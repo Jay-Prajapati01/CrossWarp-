@@ -86,6 +86,12 @@ impl InputRouter {
         self.focused_owner.as_ref().unwrap_or(&self.local_owner)
     }
 
+    /// Return the pointer-hover owner without changing keyboard focus. This is
+    /// used for wheel routing, which follows the hovered surface in Windows.
+    pub fn owner_at(&self, x: f64, y: f64) -> &InputOwner {
+        self.surfaces.owner_at(x, y).unwrap_or(&self.local_owner)
+    }
+
     pub fn keyboard_owner(&self) -> &InputOwner {
         self.focused_owner.as_ref().unwrap_or(&self.local_owner)
     }

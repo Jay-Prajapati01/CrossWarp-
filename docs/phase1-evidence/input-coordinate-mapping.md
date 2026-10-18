@@ -4,11 +4,11 @@
 
 ## Change
 
-The Win32 Raw Input event structure now includes the Windows screen-space cursor position captured at event time and a validity flag. The Rust Windows adapter maps pointer motion and buttons to those screen coordinates, retains wheel direction and extended-key state, and rejects pointer events if the native position is unavailable. Raw relative deltas remain in the native record for diagnostics/future pointer processing. No input is suppressed, sent over the session, or injected by this adapter.
+The Win32 Raw Input event structure now includes the Windows screen-space cursor position captured at event time and a validity flag. The Rust Windows adapter maps pointer motion and buttons to those screen coordinates, retains wheel direction and extended-key state, and rejects pointer events if the native position is unavailable. Raw relative deltas remain in the native record for diagnostics/future pointer processing. Wheel events now include cursor coordinates and hit-test the surface under the pointer; that is a wire schema change recorded as protocol version 4 so v3 peers are rejected. No input is suppressed, sent over the session, or injected by this adapter.
 
 ## Verification
 
-- `cargo test --workspace`: **57 passed, 0 failed** on the JACK Windows 11 x64 development host. New cases cover move/button event-time coordinates, horizontal wheel direction, extended key-up state, and missing-coordinate rejection.
+- `cargo test --workspace`: **58 passed, 0 failed** on the JACK Windows 11 x64 development host. New cases cover move/button event-time coordinates, horizontal wheel direction, extended key-up state, missing-coordinate rejection, and hover routing that preserves existing keyboard focus.
 - `cmake --build artifacts/input-bridge-build --config Release --parallel 4`: passed; the updated C ABI compiled and linked.
 - `ctest --test-dir artifacts/input-bridge-build -C Release --output-on-failure`: **1/1 passed**. This existing native test validates invalid injection arguments; it does not synthesize input.
 

@@ -1,6 +1,6 @@
 # CrossWarp session protocol
 
-**Wire protocol:** version 3.  
+**Wire protocol:** version 4.
 **Compatibility:** both peers must use a compatible protocol version. Unknown/older versions are rejected. No released compatibility guarantee exists yet.
 
 This guide describes the current implementation in `crates/agent/src`. For code-level types, see `protocol.rs`, `transport.rs`, `session_transport.rs`, `file_rpc.rs`, `input_session.rs`, and `media_session.rs`.
@@ -12,6 +12,10 @@ This guide describes the current implementation in `crates/agent/src`. For code-
 - An advertisement is an untrusted address hint. It is not proof of device identity and must not authorize file or input access.
 - The app verifies the authenticated remote device identity against the discovered device ID after handshake.
 - LAN discovery is best-effort. Multicast filtering, host firewall rules, guest Wi-Fi/client isolation, VPN routing, and multiple active interfaces can prevent discovery or peer connectivity.
+
+## Version 4 input-event schema
+
+Version 4 retains the version-3 pairing/reconnect discriminator and advances the wire compatibility number for the input-event contract. Wheel events now carry event-time screen coordinates so ownership is hit-tested under the pointer rather than using stale keyboard focus. Version 3 peers are rejected during handshake; both devices must run protocol v4 builds before input events can be used.
 
 ## Protocol v3 pairing and reconnect handshake
 
@@ -70,7 +74,7 @@ Paths are relative and validated by a capability-rooted filesystem layer. The ho
 
 ## Input envelope
 
-`InputFrame` carries session ID, monotonically increasing sequence, target device ID, and one typed event: pointer move, pointer button, wheel, or key transition. The receiver validates size, destination, sequence, valid button/key codes, and balanced down/up state. `release_all` returns matching key/button releases after disconnect.
+`InputFrame` carries session ID, monotonically increasing sequence, target device ID, and one typed event: pointer move, pointer button, wheel, or key transition. Pointer moves, buttons and wheel events carry screen-space coordinates captured at event time; wheel direction and extended-key state are preserved. The receiver validates size, destination, sequence, valid button/key codes, and balanced down/up state. `release_all` returns matching key/button releases after disconnect.
 
 This is a protocol/routing contract only. The desktop does not yet send or consume input frames. The local diagnostic does not put events on the wire. No consent policy, surface hit-test registration, local-event suppression, receiver injection, or physical input-sharing proof is implemented.
 

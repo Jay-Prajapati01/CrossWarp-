@@ -28,6 +28,8 @@ pub enum RoutedInput {
     Wheel {
         delta: i32,
         horizontal: bool,
+        x: i32,
+        y: i32,
     },
     Key {
         virtual_key: u16,
@@ -239,8 +241,8 @@ pub fn route_local_input(
             let owner = router.focus_at(*x as f64, *y as f64).clone();
             Some((owner, event))
         }
-        RoutedInput::Wheel { .. } => {
-            let owner = router.keyboard_owner().clone();
+        RoutedInput::Wheel { x, y, .. } => {
+            let owner = router.owner_at(*x as f64, *y as f64).clone();
             Some((owner, event))
         }
         RoutedInput::PointerButton {
@@ -455,5 +457,37 @@ mod tests {
                 down: false
             }]
         );
+    }
+
+    #[test]
+    fn wheel_routes_to_surface_under_pointer_not_stale_keyboard_focus() {
+        let local = owner("local");
+        let mut router = InputRouter::new(local);
+        router.surfaces_mut().upsert(Surface {
+            id: "portal".into(),
+            kind: SurfaceKind::WindowProxy,
+            bounds: Rect {
+                x: 100.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+            },
+            z_order: 1,
+            owner: owner("remote"),
+            interactive: true,
+        });
+        assert_eq!(router.focus_at(300.0, 50.0).device_id, "local");
+        let routed = route_local_input(
+            &mut router,
+            RoutedInput::Wheel {
+                delta: 120,
+                horizontal: false,
+                x: 150,
+                y: 50,
+            },
+        )
+        .unwrap();
+        assert_eq!(routed.0.device_id, "remote");
+        assert_eq!(router.keyboard_owner().device_id, "local");
     }
 }

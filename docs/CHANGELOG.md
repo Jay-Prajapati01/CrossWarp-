@@ -4,6 +4,10 @@ This log summarizes repository milestones for maintainers. Git history is the so
 
 ## Current development line
 
+### Input hit-testing correction (current working increment)
+
+Native wheel events now retain their cursor coordinates, and ownership routing hit-tests the wheel location instead of using the last keyboard-focused owner. The wire compatibility number advances to protocol v4 so older clients are rejected instead of interpreting the changed input event. This corrects the contract only; capture suppression, session integration and injection remain outstanding.
+
 ### Branding refinement (current working increment)
 
 Replaced the small-size filled-screen icon with a cleaner outlined dual-display mark and a continuous teal transfer path. This is a vector asset used by the desktop rail; it does not change feature status. Frontend validation is recorded with the increment.
