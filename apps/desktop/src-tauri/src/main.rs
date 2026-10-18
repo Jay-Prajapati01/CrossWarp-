@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 use unified_workspace_agent::protocol::{Capability, CapabilityState, DeviceId, SessionId};
@@ -13,6 +14,7 @@ use unified_workspace_agent::{
     PairingApproval, PeerBrowser, SessionChallenge, SessionChannels, SessionCoordinator,
     SharedEntry, SharedWorkspace, TrustedPeerStore, MAX_RPC_READ_CHUNK, MAX_RPC_UPLOAD_CHUNK,
 };
+use unified_workspace_agent::windows_input::{InputCapture, InputKind};
 
 #[derive(Clone, Default)]
 struct WorkspaceState(Arc<Mutex<Option<Arc<SharedWorkspace>>>>);
@@ -29,6 +31,36 @@ struct NetworkInner {
 
 #[derive(Clone, Default)]
 struct PairingState(Arc<PairingInner>);
+
+#[derive(Clone, Default)]
+struct InputDiagnosticState(Arc<Mutex<Option<InputDiagnosticHandle>>>);
+
+struct InputDiagnosticHandle {
+    stop: oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<()>,
+    counters: Arc<InputDiagnosticCounters>,
+}
+
+#[derive(Default)]
+struct InputDiagnosticCounters {
+    total: AtomicU64,
+    pointer_move: AtomicU64,
+    pointer_button: AtomicU64,
+    pointer_wheel: AtomicU64,
+    key_transition: AtomicU64,
+    error: Mutex<Option<String>>,
+}
+
+#[derive(Serialize)]
+struct InputDiagnosticReport {
+    running: bool,
+    total: u64,
+    pointer_move: u64,
+    pointer_button: u64,
+    pointer_wheel: u64,
+    key_transition: u64,
+    error: Option<String>,
+}
 
 #[derive(Default)]
 struct PairingInner {
@@ -110,6 +142,129 @@ struct LocalStatus {
     connection: &'static str,
     implementation: &'static str,
     capabilities: Vec<CapabilityReport>,
+}
+
+fn input_diagnostic_report(
+    running: bool,
+    counters: &InputDiagnosticCounters,
+) -> InputDiagnosticReport {
+    InputDiagnosticReport {
+        running,
+        total: counters.total.load(Ordering::Relaxed),
+        pointer_move: counters.pointer_move.load(Ordering::Relaxed),
+        pointer_button: counters.pointer_button.load(Ordering::Relaxed),
+        pointer_wheel: counters.pointer_wheel.load(Ordering::Relaxed),
+        key_transition: counters.key_transition.load(Ordering::Relaxed),
+        error: counters.error.lock().ok().and_then(|error| error.clone()),
+    }
+}
+
+#[tauri::command]
+fn start_input_capture_diagnostic(
+    state: tauri::State<'_, InputDiagnosticState>,
+) -> Result<InputDiagnosticReport, String> {
+    let mut active = state
+        .0
+        .lock()
+        .map_err(|_| "input diagnostic state is unavailable")?;
+    if active.as_ref().is_some_and(|handle| !handle.task.is_finished()) {
+        return Err("the local input capture diagnostic is already running".into());
+    }
+
+    // This command is reachable only after the user confirms the local-only
+    // capture disclosure in the desktop UI. Events are summarized by kind;
+    // key codes and pointer data never enter UI state or the network.
+    let mut capture = InputCapture::start_after_user_consent()
+        .map_err(|error| format!("local input capture could not start: {error}"))?;
+    let counters = Arc::new(InputDiagnosticCounters::default());
+    let task_counters = counters.clone();
+    let (stop, mut stop_requested) = oneshot::channel();
+    let task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = &mut stop_requested => break,
+                event = capture.recv() => match event {
+                    Ok(Some(event)) => {
+                        let counter = match event.kind {
+                            InputKind::PointerMove => &task_counters.pointer_move,
+                            InputKind::PointerButton => &task_counters.pointer_button,
+                            InputKind::PointerWheel => &task_counters.pointer_wheel,
+                            InputKind::Key => &task_counters.key_transition,
+                        };
+                        counter.fetch_add(1, Ordering::Relaxed);
+                        task_counters.total.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        if let Ok(mut slot) = task_counters.error.lock() {
+                            *slot = Some(error.to_string());
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    let report = input_diagnostic_report(true, &counters);
+    *active = Some(InputDiagnosticHandle {
+        stop,
+        task,
+        counters,
+    });
+    Ok(report)
+}
+
+#[tauri::command]
+async fn stop_input_capture_diagnostic(
+    state: tauri::State<'_, InputDiagnosticState>,
+) -> Result<InputDiagnosticReport, String> {
+    let handle = state
+        .0
+        .lock()
+        .map_err(|_| "input diagnostic state is unavailable")?
+        .take();
+    let Some(handle) = handle else {
+        return Ok(InputDiagnosticReport {
+            running: false,
+            total: 0,
+            pointer_move: 0,
+            pointer_button: 0,
+            pointer_wheel: 0,
+            key_transition: 0,
+            error: None,
+        });
+    };
+    let _ = handle.stop.send(());
+    handle
+        .task
+        .await
+        .map_err(|error| format!("input diagnostic worker stopped unexpectedly: {error}"))?;
+    Ok(input_diagnostic_report(false, &handle.counters))
+}
+
+#[tauri::command]
+fn get_input_capture_diagnostic(
+    state: tauri::State<'_, InputDiagnosticState>,
+) -> Result<InputDiagnosticReport, String> {
+    let active = state
+        .0
+        .lock()
+        .map_err(|_| "input diagnostic state is unavailable")?;
+    match active.as_ref() {
+        Some(handle) => Ok(input_diagnostic_report(
+            !handle.task.is_finished(),
+            &handle.counters,
+        )),
+        None => Ok(InputDiagnosticReport {
+            running: false,
+            total: 0,
+            pointer_move: 0,
+            pointer_button: 0,
+            pointer_wheel: 0,
+            key_transition: 0,
+            error: None,
+        }),
+    }
 }
 
 #[tauri::command]
@@ -1055,9 +1210,13 @@ fn main() {
         .manage(WorkspaceState::default())
         .manage(NetworkState::default())
         .manage(PairingState::default())
+        .manage(InputDiagnosticState::default())
         .invoke_handler(tauri::generate_handler![
             get_local_status,
             get_platform_report,
+            start_input_capture_diagnostic,
+            stop_input_capture_diagnostic,
+            get_input_capture_diagnostic,
             start_local_network,
             discover_local_peers,
             pair_with_peer,
@@ -1083,6 +1242,25 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_diagnostic_report_exposes_only_aggregate_counts() {
+        let counters = InputDiagnosticCounters::default();
+        counters.total.store(9, Ordering::Relaxed);
+        counters.pointer_move.store(4, Ordering::Relaxed);
+        counters.pointer_button.store(2, Ordering::Relaxed);
+        counters.pointer_wheel.store(1, Ordering::Relaxed);
+        counters.key_transition.store(2, Ordering::Relaxed);
+
+        let report = input_diagnostic_report(true, &counters);
+        assert!(report.running);
+        assert_eq!(report.total, 9);
+        assert_eq!(report.pointer_move, 4);
+        assert_eq!(report.pointer_button, 2);
+        assert_eq!(report.pointer_wheel, 1);
+        assert_eq!(report.key_transition, 2);
+        assert!(report.error.is_none());
+    }
 
     #[tokio::test]
     async fn completed_download_atomically_replaces_the_selected_file() {

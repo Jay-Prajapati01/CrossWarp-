@@ -120,6 +120,12 @@ DWORD WINAPI capture_thread(void* parameter) {
         SetEvent(capture->ready);
         return 1;
     }
+    // A caller can stop capture immediately after startup returns. Ensure the
+    // thread's message queue exists before signaling ready, otherwise its
+    // PostThreadMessage(WM_QUIT) could fail in the startup race and stop would
+    // wait forever for a message loop that never receives its shutdown request.
+    MSG bootstrap{};
+    PeekMessageW(&bootstrap, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
     SetEvent(capture->ready);
 
     MSG message{};

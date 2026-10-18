@@ -30,6 +30,7 @@ type Peer = { device_id: string; addresses: string[] };
 type PairingChallenge = { request_id: string; local_device: string; peer_device: string; verification_code: string };
 type PairingResult = { peer_device_id: string; trusted: boolean; transport_active: boolean; detail: string };
 type RemoteTransferProgress = { peer_device_id: string; direction: "upload" | "download"; bytes_sent: number; total_bytes: number; complete: boolean };
+type InputDiagnostic = { running: boolean; total: number; pointer_move: number; pointer_button: number; pointer_wheel: number; key_transition: number; error: string | null };
 
 const labels: Record<string, { title: string; glyph: string }> = {
   input: { title: "Shared input", glyph: "↔" },
@@ -52,6 +53,7 @@ export function App() {
   const [remoteEntries, setRemoteEntries] = useState<WorkspaceEntry[] | null>(null);
   const [remoteDirectory, setRemoteDirectory] = useState<string | null>(null);
   const [transferProgress, setTransferProgress] = useState<RemoteTransferProgress | null>(null);
+  const [inputDiagnostic, setInputDiagnostic] = useState<InputDiagnostic | null>(null);
 
   useEffect(() => {
     invoke<LocalStatus>("get_local_status")
@@ -63,7 +65,20 @@ export function App() {
     invoke<string[]>("list_trusted_peers")
       .then(setTrustedPeerIds)
       .catch((reason: unknown) => setError(String(reason)));
+    invoke<InputDiagnostic>("get_input_capture_diagnostic")
+      .then(setInputDiagnostic)
+      .catch((reason: unknown) => setError(String(reason)));
   }, []);
+
+  useEffect(() => {
+    if (!inputDiagnostic?.running) return;
+    const timer = window.setInterval(() => {
+      void invoke<InputDiagnostic>("get_input_capture_diagnostic")
+        .then(setInputDiagnostic)
+        .catch((reason: unknown) => setError(String(reason)));
+    }, 300);
+    return () => window.clearInterval(timer);
+  }, [inputDiagnostic?.running]);
 
   useEffect(() => {
     if (!pairingResult?.transport_active) {
@@ -128,6 +143,21 @@ export function App() {
         const found = await invoke<Peer[]>("discover_local_peers");
         if (found.length) setPeers((current) => [...new Map([...current, ...found].map((peer) => [peer.device_id, peer])).values()]);
       }
+    } catch (reason) { setError(String(reason)); }
+  }
+
+  async function toggleInputCaptureDiagnostic() {
+    try {
+      if (inputDiagnostic?.running) {
+        setInputDiagnostic(await invoke<InputDiagnostic>("stop_input_capture_diagnostic"));
+        return;
+      }
+      const approved = window.confirm(
+        "Start a local-only Raw Input diagnostic? While active, CrossWarp can observe system mouse and keyboard events and count their types. Input still reaches local apps. Event data is briefly buffered in memory for counting, but is not written to disk or forwarded to a peer. Avoid typing passwords or sensitive text until you stop it.",
+      );
+      if (!approved) return;
+      setInputDiagnostic(await invoke<InputDiagnostic>("start_input_capture_diagnostic"));
+      setError(null);
     } catch (reason) { setError(String(reason)); }
   }
 
@@ -250,6 +280,13 @@ export function App() {
     } catch (reason) { setTransferProgress(null); setError(String(reason)); }
   }
 
+  const availableCapabilityCount = (status?.capabilities ?? []).filter((capability) => {
+    if (capability.capability === "shared_files") {
+      return Boolean(pairingResult?.transport_active && remoteEntries !== null);
+    }
+    return capability.state === "available" || capability.state === "active";
+  }).length;
+
   return (
     <main className="shell">
       <aside className="rail" aria-label="Main navigation">
@@ -298,9 +335,19 @@ export function App() {
 
           {platform && <section className="setup-panel"><div className="setup-symbol">⌘</div><div className="workspace-content"><strong>Windows compatibility diagnostics · OS floors only</strong><p>{platform.os_name}{platform.version ? ` · build ${platform.version.build}` : ""} · {platform.architecture}</p><div className="workspace-root">IDD 1.11 documented OS floor: {platform.meets_iddcx_111_os_floor ? "met" : "not met"} · HWND capture API floor (Windows 10 1903): {platform.meets_wgc_create_for_window_os_floor ? "met" : "not met"}</div><p>These checks report documented OS build boundaries only. They do not confirm an installed driver, capture permission, hardware support, or complete feature compatibility.</p></div></section>}
 
+          <section className="setup-panel">
+            <div className="setup-symbol">⌁</div>
+            <div className="workspace-content">
+              <strong>Local input capture diagnostic · not input sharing</strong>
+              <p>Raw Input observes system keyboard and mouse events while running. This diagnostic briefly buffers events in memory to count their types; it does not suppress local input, route events to a peer, or write event contents to disk. Avoid entering sensitive text while it runs.</p>
+              <div className="workspace-actions"><button onClick={() => void toggleInputCaptureDiagnostic()}>{inputDiagnostic?.running ? "Stop diagnostic" : "Start local diagnostic"}</button></div>
+              {inputDiagnostic && <div className="workspace-root" role="status">{inputDiagnostic.running ? "Capture running" : "Capture stopped"} · {inputDiagnostic.total} events · {inputDiagnostic.pointer_move} pointer moves · {inputDiagnostic.pointer_button} button events · {inputDiagnostic.pointer_wheel} wheel events · {inputDiagnostic.key_transition} key transitions{inputDiagnostic.error ? ` · ${inputDiagnostic.error}` : ""}</div>}
+            </div>
+          </section>
+
           {network && <section className="setup-panel"><div className="setup-symbol">⌁</div><div className="workspace-content"><strong>Device identity and LAN transport</strong><p>Identity is saved with Windows DPAPI. Discovery advertisements are untrusted hints; pairing uses two-sided code approval. Shared Workspace RPC is available on an approved encrypted session.</p><div className="workspace-root">Device fingerprint · {network.device_id}</div>{peers.map((peer) => <div className="workspace-root" key={peer.device_id}>Untrusted discovered peer · {peer.device_id} · {peer.addresses.join(", ")}</div>)}</div></section>}
 
-          <div className="section-heading"><div><h2>Connected capabilities</h2><p>Each service will report its own live state.</p></div><span className="all-state">0 of 4 available</span></div>
+          <div className="section-heading"><div><h2>Connected capabilities</h2><p>Service state is based on the current peer and local service report.</p></div><span className="all-state">{availableCapabilityCount} of 4 available</span></div>
           <section className="capability-grid" aria-label="Capability status">
             {(status?.capabilities ?? Object.keys(labels).map((capability) => ({ capability, state: "checking", detail: "Loading local status." }))).map((capability) => {
               const label = labels[capability.capability] ?? { title: capability.capability, glyph: "•" };

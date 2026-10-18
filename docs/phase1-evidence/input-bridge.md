@@ -8,6 +8,7 @@
 - The bridge exposes relative/absolute pointer movement, five mouse buttons, wheel, and virtual-key transitions through a C ABI.
 - Injection uses `SendInput` and has no integrity-level bypass. UIPI, UAC secure desktop, elevated-process boundaries, and protected sessions remain limitations.
 - `crates/agent/build.rs` compiles the native static library on Windows targets. `crates/agent/src/windows_input.rs` wraps the ABI and places input into a bounded 4096-event queue. Queue overflow is explicit; the integration caller must stop routing and release held inputs.
+- The capture thread now ensures its Win32 message queue exists before reporting startup success, so a caller stopping immediately cannot race `PostThreadMessage(WM_QUIT)` against queue creation.
 - The wrapper is not yet connected to Rust `InputRouter`, focus ownership, transport messages, session consent UI, or disconnect recovery.
 
 ## Checks on JACK

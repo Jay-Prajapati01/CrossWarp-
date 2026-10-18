@@ -47,4 +47,4 @@ The user asked for broad Windows compatibility; the pre-Windows 10 rows are not 
 
 ## Current limitation
 
-This workspace has no legacy Windows hardware/VM validation, no signed/loaded IDD, and no authorized deployment/command route to the second physical PC at the time this matrix was written. The compile/test checks on JACK do not prove cross-version behavior. Existing commits are local; `git remote -v` returned no configured GitHub or other remote repository.
+This workspace has no legacy Windows hardware/VM validation, no signed/loaded IDD, and no authorized deployment/command route to the second physical PC at the time this matrix was last updated. The compile/test checks on JACK do not prove cross-version behavior. The user-provided GitHub origin is `https://github.com/Jay-Prajapati01/CrossWarp-.git`; the current main branch has been pushed there. A configured remote and successful push do not establish product acceptance.
