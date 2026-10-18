@@ -6,7 +6,7 @@ This log summarizes repository milestones for maintainers. Git history is the so
 
 ### Input hit-testing correction (current working increment)
 
-Native wheel events now retain their cursor coordinates, and ownership routing hit-tests the wheel location instead of using the last keyboard-focused owner. The wire compatibility number advances to protocol v4 so older clients are rejected instead of interpreting the changed input event. This corrects the contract only; capture suppression, session integration and injection remain outstanding.
+Native wheel events now retain their cursor coordinates, and ownership routing hit-tests the wheel location without stealing keyboard focus. The wire compatibility number advances to protocol v4 so older clients are rejected instead of silently misreading the event. A new agent controller combines ownership decisions with encrypted sending; it leaves local events local and releases held keys to the original remote owner. The desktop capture path, capture suppression, remote injection and user consent are still outstanding.
 
 ### Branding refinement (current working increment)
 

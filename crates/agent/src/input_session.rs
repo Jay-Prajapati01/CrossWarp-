@@ -117,6 +117,8 @@ pub enum InputSessionError {
     OutOfOrder,
     #[error("input transition repeats a down or releases an unheld key/button")]
     UnbalancedTransition,
+    #[error("input ownership refers to a device outside this local peer session")]
+    UnknownOwner,
     #[error("input sequence space is exhausted")]
     SequenceExhausted,
     #[error("input session transport failed: {0}")]
@@ -129,6 +131,64 @@ pub struct InputSessionSender {
     session_id: SessionId,
     target: DeviceId,
     next_sequence: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InputDispatchResult {
+    /// A malformed/repeated transition was ignored by the ownership router.
+    Ignored,
+    /// The event belongs to this PC and should continue through the local OS path.
+    Local(InputOwner),
+    /// The event belongs to the paired PC and was queued on the encrypted input lane.
+    Remote(InputOwner),
+}
+
+/// Combines hit-tested ownership with the ordered encrypted input sender.
+/// Callers must only feed events from an ownership-aware capture path that can
+/// suppress locally delivered events when this returns `Remote`.
+pub struct InputSessionController {
+    local_device: DeviceId,
+    remote_device: DeviceId,
+    router: InputRouter,
+    sender: InputSessionSender,
+}
+
+impl InputSessionController {
+    pub fn new(
+        session_id: SessionId,
+        local_device: DeviceId,
+        remote_device: DeviceId,
+        router: InputRouter,
+    ) -> Self {
+        Self {
+            sender: InputSessionSender::new(session_id, remote_device.clone()),
+            local_device,
+            remote_device,
+            router,
+        }
+    }
+
+    pub fn router_mut(&mut self) -> &mut InputRouter {
+        &mut self.router
+    }
+
+    pub async fn dispatch(
+        &mut self,
+        channel: &ServiceSender,
+        event: RoutedInput,
+    ) -> Result<InputDispatchResult, InputSessionError> {
+        let Some((owner, event)) = route_local_input(&mut self.router, event) else {
+            return Ok(InputDispatchResult::Ignored);
+        };
+        if owner.device_id == self.local_device.0 {
+            return Ok(InputDispatchResult::Local(owner));
+        }
+        if owner.device_id != self.remote_device.0 {
+            return Err(InputSessionError::UnknownOwner);
+        }
+        self.sender.send(channel, event).await?;
+        Ok(InputDispatchResult::Remote(owner))
+    }
 }
 
 impl InputSessionSender {
@@ -349,6 +409,115 @@ mod tests {
         let payload = channels_b.input.receiver.recv().await.unwrap();
         assert!(matches!(
             input_receiver.accept(&payload),
+            Ok(RoutedInput::Key { down: false, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn controller_routes_only_remote_owned_events_and_keeps_balanced_keys_with_owner() {
+        let (a, b) = (DeviceIdentity::generate(), DeviceIdentity::generate());
+        let (stream_a, stream_b) = duplex(32 * 1024);
+        let (paired_a, paired_b) = tokio::join!(
+            pair_over_stream(stream_a, &a, HandshakeRole::Initiator, |_| async { true }),
+            pair_over_stream(stream_b, &b, HandshakeRole::Responder, |_| async { true }),
+        );
+        let (sender_a, receiver_a, _) = paired_a.unwrap().into_encrypted();
+        let (sender_b, receiver_b, _) = paired_b.unwrap().into_encrypted();
+        let (channels_a, _task_a) = spawn_session_transport(sender_a, receiver_a);
+        let (channels_b, _task_b) = spawn_session_transport(sender_b, receiver_b);
+
+        let session_id = SessionId::new();
+        let local_id = DeviceId("local".into());
+        let remote_id = DeviceId("remote".into());
+        let mut router = InputRouter::new(owner("local"));
+        router.surfaces_mut().upsert(Surface {
+            id: "live-window-proxy".into(),
+            kind: SurfaceKind::WindowProxy,
+            bounds: Rect {
+                x: 100.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+            },
+            z_order: 4,
+            owner: owner("remote"),
+            interactive: true,
+        });
+        let mut controller =
+            InputSessionController::new(session_id, local_id.clone(), remote_id.clone(), router);
+        let mut receiver = InputSessionReceiver::new(session_id, remote_id);
+
+        let local_result = controller
+            .dispatch(
+                &channels_a.input.sender,
+                RoutedInput::PointerMove { x: 20, y: 20 },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(local_result, InputDispatchResult::Local(_)));
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(10),
+            channels_b.input.receiver.recv()
+        )
+        .await
+        .is_err());
+
+        let remote_move = controller
+            .dispatch(
+                &channels_a.input.sender,
+                RoutedInput::PointerMove { x: 150, y: 50 },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(remote_move, InputDispatchResult::Remote(_)));
+        receiver
+            .accept(&channels_b.input.receiver.recv().await.unwrap())
+            .unwrap();
+
+        let remote_key_down = controller
+            .dispatch(
+                &channels_a.input.sender,
+                RoutedInput::Key {
+                    virtual_key: 0x41,
+                    scan_code: 0x1e,
+                    extended: false,
+                    down: true,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(remote_key_down, InputDispatchResult::Remote(_)));
+        receiver
+            .accept(&channels_b.input.receiver.recv().await.unwrap())
+            .unwrap();
+
+        // Move back over the local desktop: the key-up still goes to the peer
+        // that received key-down, preventing a stuck key on either device.
+        assert!(matches!(
+            controller
+                .dispatch(
+                    &channels_a.input.sender,
+                    RoutedInput::PointerMove { x: 20, y: 20 },
+                )
+                .await
+                .unwrap(),
+            InputDispatchResult::Local(_)
+        ));
+        let remote_key_up = controller
+            .dispatch(
+                &channels_a.input.sender,
+                RoutedInput::Key {
+                    virtual_key: 0x41,
+                    scan_code: 0x1e,
+                    extended: false,
+                    down: false,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(remote_key_up, InputDispatchResult::Remote(_)));
+        assert!(matches!(
+            receiver.accept(&channels_b.input.receiver.recv().await.unwrap()),
             Ok(RoutedInput::Key { down: false, .. })
         ));
     }

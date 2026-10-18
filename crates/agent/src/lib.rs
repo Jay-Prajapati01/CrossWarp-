@@ -27,8 +27,8 @@ pub use file_rpc::{
 };
 pub use identity_store::{IdentityStore, IdentityStoreError};
 pub use input_session::{
-    route_local_input, InputSessionError, InputSessionReceiver, InputSessionSender, RoutedInput,
-    MAX_INPUT_FRAME_BYTES,
+    route_local_input, InputDispatchResult, InputSessionController, InputSessionError,
+    InputSessionReceiver, InputSessionSender, RoutedInput, MAX_INPUT_FRAME_BYTES,
 };
 pub use lan::{DiscoveredPeer, LanEndpoint, LanError, PeerBrowser};
 pub use media_session::{
