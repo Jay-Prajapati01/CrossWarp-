@@ -19,7 +19,7 @@ After the authenticated handshake succeeds, both endpoints derive the same `Sess
 
 ## Version 5 input-event and media schema
 
-Version 5 retains the version-3 pairing/reconnect discriminator and version-4 event-time pointer coordinates for wheel ownership. It adds JPEG as a window-video codec identifier for the current desktop receiver preview. Version 4 peers are rejected during handshake; both devices must run protocol v5 builds to interoperate.
+Version 5 retains the version-3 pairing/reconnect discriminator and version-4 event-time pointer coordinates for wheel ownership. It adds JPEG video and WindowControl stop/revoke frames for the consented window preview stream. Version 4 peers are rejected during handshake; both devices must run protocol v5 builds to interoperate.
 
 ## Protocol v3 pairing and reconnect handshake
 
@@ -84,9 +84,9 @@ This is a protocol/routing contract only. The desktop does not yet send or consu
 
 ## Video envelope
 
-`MediaFrame` carries session ID, target device ID, stream ID, sequence, monotonic source timestamp in 100 ns units, dimensions, codec (`H264`, `HEVC`, `AV1`, or `BGRA8`), key-frame flag, and binary payload. A small bounded JSON header is length-prefixed within the service payload; media bytes remain binary. Dimensions and payload are bounded, and receivers reject wrong destinations, replay/reordering, and invalid sizes. Sequence gaps are allowed after stale frame drops.
+`MediaFrame` carries session ID, target device ID, stream ID, sequence, monotonic source timestamp in 100 ns units, dimensions, codec (`H264`, `HEVC`, `AV1`, `JPEG`, `WindowControl`, or `BGRA8`), key-frame flag, and binary payload. A small bounded JSON header is length-prefixed within the service payload; media bytes remain binary. Dimensions and payload are bounded, and receivers reject wrong destinations, replay/reordering, and invalid sizes. Sequence gaps are allowed after stale frame drops. A changed stream ID starts a new consentable stream and resets that stream-local sequence/timestamp check; the authenticated encrypted record sequence still prevents transport replay.
 
-The desktop now consumes the authenticated window-video lane, checks session/destination/replay state, requests local approval before rendering the first JPEG frame, and exposes the latest approved preview to the UI. JPEG decoding is delegated to the WebView image decoder. This is a receiver-only preview increment: there is still no peer-side capture/encoding producer, interactive proxy, forwarded input, or display-driver consumer. H264/HEVC/AV1/BGRA decoding is not wired. A display-video producer/consumer is still absent.
+The desktop can enumerate visible titled windows, capture a selected HWND through the Windows.Graphics.Capture native bridge after source-side confirmation, downscale and encode bounded JPEG frames, and send them on the authenticated window-video lane. The receiver checks session/destination/replay state and frame dimensions, requests separate local consent, and renders the preview through the WebView image decoder. Stopping capture releases the source worker; the preview expires if frames stop. This remains view-only: there is no movable window-proxy surface, input forwarding, display-driver producer/consumer, or interactive ownership integration. H264/HEVC/AV1/BGRA decoding is not wired.
 
 ## Evolution rules
 

@@ -52,6 +52,40 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rustc-link-lib=static=unified-input-bridge");
     println!("cargo:rustc-link-lib=user32");
     println!("cargo:rerun-if-changed={}", source.display());
+
+    let capture_source = repository_root.join("native/windows-bridge/window-capture");
+    let capture_output = PathBuf::from(env::var("OUT_DIR")?).join("window-capture-bridge");
+    run(Command::new("cmake")
+        .arg("-S")
+        .arg(&capture_source)
+        .arg("-B")
+        .arg(&capture_output)
+        .arg("-G")
+        .arg("Visual Studio 17 2022")
+        .arg("-A")
+        .arg(architecture))?;
+    run(Command::new("cmake")
+        .arg("--build")
+        .arg(&capture_output)
+        .arg("--config")
+        .arg("Release")
+        .arg("--target")
+        .arg("crosswarp-window-capture")
+        .arg("--parallel")
+        .arg("4"))?;
+
+    println!(
+        "cargo:rustc-link-search=native={}",
+        capture_output.join("Release").display()
+    );
+    println!("cargo:rustc-link-lib=static=crosswarp-window-capture");
+    println!("cargo:rustc-link-lib=d3d11");
+    println!("cargo:rustc-link-lib=dxgi");
+    println!("cargo:rustc-link-lib=windowsapp");
+    println!(
+        "cargo:rerun-if-changed={}",
+        capture_source.join("window_capture.cpp").display()
+    );
     Ok(())
 }
 

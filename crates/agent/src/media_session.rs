@@ -22,6 +22,7 @@ pub enum VideoCodec {
     Hevc,
     Av1,
     Jpeg,
+    WindowControl,
     Bgra8,
 }
 
@@ -196,9 +197,8 @@ impl MediaSessionReceiver {
             return Err(MediaSessionError::WrongDestination);
         }
         if let Some((stream_id, sequence, timestamp)) = self.last_frame {
-            if frame.stream_id != stream_id
-                || frame.sequence <= sequence
-                || frame.timestamp_100ns <= timestamp
+            if frame.stream_id == stream_id
+                && (frame.sequence <= sequence || frame.timestamp_100ns <= timestamp)
             {
                 return Err(MediaSessionError::OutOfOrder);
             }
@@ -249,6 +249,21 @@ mod tests {
         assert!(receiver
             .accept(&frame(session, target, 3, 40).encode().unwrap())
             .is_ok());
+    }
+
+    #[test]
+    fn a_new_consentable_stream_can_restart_its_sequence_and_source_clock() {
+        let session = SessionId::new();
+        let target = DeviceId("target".into());
+        let mut receiver = MediaSessionReceiver::new(session, target.clone(), MediaLane::Window);
+        let first = frame(session, target.clone(), 20, 1000);
+        receiver.accept(&first.encode().unwrap()).unwrap();
+        let mut restarted = frame(session, target, 1, 10);
+        restarted.stream_id = 18;
+        assert_eq!(
+            receiver.accept(&restarted.encode().unwrap()).unwrap(),
+            restarted
+        );
     }
 
     #[test]
@@ -320,23 +335,40 @@ mod tests {
         let mut window = frame(session, right_identity.device_id(), 0, 100);
         window.codec = VideoCodec::Jpeg;
         let display = frame(session, right_identity.device_id(), 0, 200);
+        let control = MediaFrame {
+            session_id: session,
+            target: left_identity.device_id(),
+            stream_id: 29,
+            sequence: 1,
+            timestamp_100ns: 1,
+            width: 1,
+            height: 1,
+            codec: VideoCodec::WindowControl,
+            key_frame: true,
+            payload: br#"{"action":"stop"}"#.to_vec(),
+        };
         let mut window_receiver =
             MediaSessionReceiver::new(session, right_identity.device_id(), MediaLane::Window);
         let mut display_receiver =
             MediaSessionReceiver::new(session, right_identity.device_id(), MediaLane::Display);
+        let mut control_receiver =
+            MediaSessionReceiver::new(session, left_identity.device_id(), MediaLane::Window);
 
-        let (window_send, display_send, file_send) = tokio::join!(
+        let (window_send, display_send, control_send, file_send) = tokio::join!(
             send_media_frame(&left.window_video.sender, MediaLane::Window, &window),
             send_media_frame(&left.display_video.sender, MediaLane::Display, &display),
+            send_media_frame(&right.window_video.sender, MediaLane::Window, &control),
             left.files.sender.send(b"file-operation".to_vec()),
         );
         window_send.unwrap();
         display_send.unwrap();
+        control_send.unwrap();
         file_send.unwrap();
 
-        let (window_bytes, display_bytes, file_bytes) = tokio::join!(
+        let (window_bytes, display_bytes, control_bytes, file_bytes) = tokio::join!(
             timeout(Duration::from_secs(2), right.window_video.receiver.recv()),
             timeout(Duration::from_secs(2), right.display_video.receiver.recv()),
+            timeout(Duration::from_secs(2), left.window_video.receiver.recv()),
             timeout(Duration::from_secs(2), right.files.receiver.recv()),
         );
         let window_decoded = window_receiver
@@ -345,8 +377,16 @@ mod tests {
         let display_decoded = display_receiver
             .accept(&display_bytes.unwrap().unwrap())
             .unwrap();
+        let control_decoded = control_receiver
+            .accept(&control_bytes.unwrap().unwrap())
+            .unwrap();
         assert_eq!(window_decoded, window);
         assert_eq!(display_decoded, display);
+        assert_eq!(control_decoded, control);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&control_decoded.payload).unwrap(),
+            serde_json::json!({"action": "stop"})
+        );
         assert_eq!(file_bytes.unwrap().as_deref(), Some(&b"file-operation"[..]));
     }
 }
