@@ -2,7 +2,7 @@
 
 The agent currently provides device identity and mutual approval, an authenticated encrypted TCP session, a bounded four-service multiplexer, and capability-rooted Shared Workspace RPC. The multiplexer gives input, window video, extended-display video, and files independent service channels over one session. It prioritizes input and interactive video, applies bounded queues, and reserves periodic file progress. The desktop consumes the file channel; input and media producers/receivers are not integrated yet and must still report inactive.
 
-The service frame format is part of protocol version 2. Both peers must run a build that supports the same protocol version. Old v1 clients fail the authenticated protocol-version check rather than misinterpreting a service tag as a file packet.
+The authenticated handshake and four-service frame format are protocol version 3. Version 3 adds an explicit pairing-versus-trusted-reconnect handshake discriminator and a listener API that can verify a saved peer or fall back to explicit pairing approval; peers must run compatible builds. Older protocol versions are rejected during handshake validation rather than being interpreted as the new format.
 
 The agent also exposes a typed input-session contract. It sequences events over the encrypted input lane, binds them to a session and destination device, validates key/button down/up balance, synthesizes releases on disconnect, and uses the ownership router to send releases to the surface that received the original press. This contract is not yet connected to global input capture, an explicit consent UI, or native input injection; it does not suppress or redirect local OS input by itself.
 

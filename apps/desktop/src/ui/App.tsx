@@ -46,6 +46,7 @@ export function App() {
   const [directory, setDirectory] = useState<string | null>(null);
   const [network, setNetwork] = useState<NetworkStatus | null>(null);
   const [peers, setPeers] = useState<Peer[]>([]);
+  const [trustedPeerIds, setTrustedPeerIds] = useState<string[]>([]);
   const [challenge, setChallenge] = useState<PairingChallenge | null>(null);
   const [pairingResult, setPairingResult] = useState<PairingResult | null>(null);
   const [remoteEntries, setRemoteEntries] = useState<WorkspaceEntry[] | null>(null);
@@ -58,6 +59,9 @@ export function App() {
       .catch((reason: unknown) => setError(String(reason)));
     invoke<HostPlatform>("get_platform_report")
       .then(setPlatform)
+      .catch((reason: unknown) => setError(String(reason)));
+    invoke<string[]>("list_trusted_peers")
+      .then(setTrustedPeerIds)
       .catch((reason: unknown) => setError(String(reason)));
   }, []);
 
@@ -117,6 +121,7 @@ export function App() {
   async function startNetwork() {
     try {
       setNetwork(await invoke<NetworkStatus>("start_local_network"));
+      setTrustedPeerIds(await invoke<string[]>("list_trusted_peers"));
       setError(null);
       for (let attempt = 0; attempt < 10; attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 300));
@@ -129,8 +134,11 @@ export function App() {
   async function pairWith(peer: Peer, address: string) {
     try {
       setPairingResult(null);
-      const result = await invoke<PairingResult>("pair_with_peer", { peer: { device_id: peer.device_id, address } });
+      const reconnect = trustedPeerIds.includes(peer.device_id);
+      const command = reconnect ? "reconnect_trusted_peer" : "pair_with_peer";
+      const result = await invoke<PairingResult>(command, { peer: { device_id: peer.device_id, address } });
       setPairingResult(result);
+      setTrustedPeerIds(await invoke<string[]>("list_trusted_peers"));
       setError(null);
     } catch (reason) { setError(String(reason)); }
   }
@@ -283,7 +291,7 @@ export function App() {
             <div className="peer-placeholder"><span className="add-peer">＋</span><span><strong>{peers.length ? `${peers.length} peer${peers.length === 1 ? "" : "s"} discovered` : network ? "Listening for peers" : "No peer session"}</strong><small>{network ? `${network.discovery} · ${network.listen_address}` : "Start local discovery to advertise this device and find others."}</small></span></div>
           </section>
 
-          {peers.length > 0 && <section className="setup-panel"><div className="workspace-content"><strong>Discovered devices · not trusted yet</strong><p>Pair only when both people can compare and approve the same six-digit code.</p>{peers.map((peer) => <div className="peer-row" key={peer.device_id}><span>{peer.device_id} · {peer.addresses.join(", ")}</span><button onClick={() => peer.addresses[0] && pairWith(peer, peer.addresses[0])}>Request pairing</button></div>)}</div></section>}
+          {peers.length > 0 && <section className="setup-panel"><div className="workspace-content"><strong>Discovered devices</strong><p>New peers require both users to approve the same six-digit code. Previously approved peers reconnect using their stored device identity.</p>{peers.map((peer) => { const trusted = trustedPeerIds.includes(peer.device_id); return <div className="peer-row" key={peer.device_id}><span>{peer.device_id} · {peer.addresses.join(", ")}</span><button onClick={() => peer.addresses[0] && pairWith(peer, peer.addresses[0])}>{trusted ? "Reconnect" : "Request pairing"}</button></div>; })}</div></section>}
           {pairingResult && <section className="setup-panel"><div className="workspace-content"><strong>Trusted peer · encrypted transport active</strong><p>{pairingResult.detail}</p><div className="workspace-root">Authenticated peer · {pairingResult.peer_device_id}</div><div className="workspace-actions"><button onClick={() => void disconnectPeer()}>Disconnect peer</button></div></div></section>}
 
           {pairingResult?.transport_active && <section className="setup-panel workspace-panel"><div className="setup-symbol">⇄</div><div className="workspace-content"><strong>Peer Shared Workspace</strong><p>Contents are requested over the authenticated encrypted connection. The peer must grant a folder before it appears here.</p><div className="workspace-actions"><button onClick={() => void refreshRemoteDirectory(remoteDirectory)}>Refresh peer folder</button><button onClick={() => void createRemoteFolder()}>New peer folder</button><button disabled={Boolean(transferProgress && !transferProgress.complete)} onClick={() => void uploadRemoteFile()}>Upload file</button></div>{transferProgress?.peer_device_id === pairingResult.peer_device_id && <div className="workspace-root" role="status">{transferProgress.complete ? (transferProgress.direction === "upload" ? "Upload verified" : "Download saved") : (transferProgress.direction === "upload" ? "Uploading" : "Downloading")} · {transferProgress.bytes_sent.toLocaleString()} / {transferProgress.total_bytes.toLocaleString()} bytes{transferProgress.total_bytes > 0 ? ` · ${Math.floor(transferProgress.bytes_sent * 100 / transferProgress.total_bytes)}%` : ""}</div>}{remoteEntries && <><div className="workspace-root">Remote folder · {remoteDirectory || "/"}</div><div className="file-list">{remoteDirectory && <button className="file-row folder-row" onClick={() => void refreshRemoteDirectory(remoteDirectory.includes("/") ? remoteDirectory.slice(0, remoteDirectory.lastIndexOf("/")) : null)}>↰ <span>Parent folder</span></button>}{remoteEntries.map((entry) => <div className="remote-entry" key={entry.relative_path}><button className="file-row" onClick={() => entry.kind === "directory" ? void refreshRemoteDirectory(entry.relative_path) : void downloadRemoteFile(entry)}><span>{entry.kind === "directory" ? "▰" : "▤"} {entry.name}</span><small>{entry.kind === "directory" ? "Folder" : `${entry.size.toLocaleString()} bytes · download`}</small></button><div className="remote-entry-actions"><button onClick={() => void renameRemoteEntry(entry)}>Rename</button>{entry.kind === "file" && <button onClick={() => void deleteRemoteFile(entry)}>Delete</button>}</div></div>)}{remoteEntries.length === 0 && <span className="empty-files">Peer folder is empty.</span>}</div></>}</div></section>}

@@ -7,10 +7,11 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 use unified_workspace_agent::protocol::{Capability, CapabilityState, DeviceId, SessionId};
 use unified_workspace_agent::{
-    pair_over_stream, spawn_file_rpc, spawn_session_transport, DeviceIdentity, FileRequest,
-    FileResponse, FileRpcClient, HandshakeRole, HostPlatform, IdentityStore, LanEndpoint,
-    PairingApproval, PeerBrowser, SessionChannels, SessionCoordinator, SharedEntry,
-    SharedWorkspace, TrustedPeerStore, MAX_RPC_READ_CHUNK, MAX_RPC_UPLOAD_CHUNK,
+    accept_pair_or_trusted_over_stream, connect_trusted_over_stream, pair_over_stream,
+    spawn_file_rpc, spawn_session_transport, DeviceIdentity, FileRequest, FileResponse,
+    FileRpcClient, HandshakeRole, HostPlatform, IdentityStore, LanEndpoint, PairedTransport,
+    PairingApproval, PeerBrowser, SessionChallenge, SessionChannels, SessionCoordinator,
+    SharedEntry, SharedWorkspace, TrustedPeerStore, MAX_RPC_READ_CHUNK, MAX_RPC_UPLOAD_CHUNK,
 };
 
 #[derive(Clone, Default)]
@@ -258,14 +259,12 @@ async fn start_local_network(
             let workspace_state = workspace_state.clone();
             let app_handle = app_handle.clone();
             tokio::spawn(async move {
-                let _ = run_pairing(
+                let _ = run_accept(
                     stream,
                     peer_identity,
-                    HandshakeRole::Responder,
                     app_handle,
                     pairing_state,
                     workspace_state,
-                    None,
                 )
                 .await;
             });
@@ -317,6 +316,67 @@ async fn pair_with_peer(
     )
     .await?;
     Ok(result)
+}
+
+#[tauri::command]
+async fn reconnect_trusted_peer(
+    app: tauri::AppHandle,
+    peer: PairAddress,
+    network: tauri::State<'_, NetworkState>,
+    pairing: tauri::State<'_, PairingState>,
+    workspace: tauri::State<'_, WorkspaceState>,
+) -> Result<PairingResult, String> {
+    let address: std::net::SocketAddr = peer
+        .address
+        .parse()
+        .map_err(|_| "peer address is invalid")?;
+    let device_id = DeviceId(peer.device_id.clone());
+    let trusted_peer = TrustedPeerStore::for_current_user()
+        .map_err(|error| error.to_string())?
+        .list()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|trusted| trusted.device_id == device_id)
+        .ok_or("this device has no saved approval for that peer")?;
+    let identity = {
+        let inner = network
+            .0
+            .lock()
+            .map_err(|_| "network state is unavailable")?;
+        inner
+            .identity
+            .as_ref()
+            .ok_or("start local discovery first")?
+            .clone()
+    };
+    let stream = tokio::net::TcpStream::connect(address)
+        .await
+        .map_err(|error| format!("could not connect to discovered peer: {error}"))?;
+    let paired = connect_trusted_over_stream(
+        stream,
+        &identity,
+        HandshakeRole::Initiator,
+        &trusted_peer,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    activate_session(
+        paired,
+        app,
+        pairing.0.clone(),
+        workspace.0.clone(),
+        Some(peer.device_id),
+    )
+    .await
+}
+
+#[tauri::command]
+fn list_trusted_peers() -> Result<Vec<String>, String> {
+    TrustedPeerStore::for_current_user()
+        .map_err(|error| error.to_string())?
+        .list()
+        .map(|peers| peers.into_iter().map(|peer| peer.device_id.0).collect())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -373,49 +433,94 @@ async fn run_pairing(
     workspace: Arc<Mutex<Option<Arc<SharedWorkspace>>>>,
     expected_peer: Option<String>,
 ) -> Result<PairingResult, String> {
-    use tauri::Emitter;
-    let completion_app = app.clone();
+    let challenge_app = app.clone();
     let challenge_pairing = pairing.clone();
     let paired = pair_over_stream(stream, &identity, role, move |challenge| {
-        let app = app.clone();
-        let pairing = challenge_pairing.clone();
-        async move {
-            let request_id = format!(
-                "{}-{}",
-                std::process::id(),
-                NEXT_PAIRING_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            );
-            let (approve, result) = oneshot::channel();
-            if let Ok(mut pending) = pairing.pending.lock() {
-                pending.insert(request_id.clone(), approve);
-            } else {
-                return false;
-            }
-            let event = PairingChallengeView {
-                request_id: request_id.clone(),
-                local_device: challenge.local_device.0,
-                peer_device: challenge.peer_device.0,
-                verification_code: challenge.verification_code,
-            };
-            if app.emit("pairing-challenge", event).is_err() {
-                if let Ok(mut pending) = pairing.pending.lock() {
-                    pending.remove(&request_id);
-                }
-                return false;
-            }
-            let approved = tokio::time::timeout(std::time::Duration::from_secs(120), result)
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .unwrap_or(false);
-            if let Ok(mut pending) = pairing.pending.lock() {
-                pending.remove(&request_id);
-            }
-            approved
-        }
+        request_pairing_approval(challenge_app.clone(), challenge_pairing.clone(), challenge)
     })
     .await
     .map_err(|error| error.to_string())?;
+    activate_session(paired, app, pairing, workspace, expected_peer).await
+}
+
+async fn run_accept(
+    stream: tokio::net::TcpStream,
+    identity: Arc<DeviceIdentity>,
+    app: tauri::AppHandle,
+    pairing: Arc<PairingInner>,
+    workspace: Arc<Mutex<Option<Arc<SharedWorkspace>>>>,
+) -> Result<PairingResult, String> {
+    let trusted_peers = TrustedPeerStore::for_current_user()
+        .map_err(|error| error.to_string())?
+        .list()
+        .map_err(|error| error.to_string())?;
+    let challenge_app = app.clone();
+    let challenge_pairing = pairing.clone();
+    let paired = accept_pair_or_trusted_over_stream(
+        stream,
+        &identity,
+        &trusted_peers,
+        move |challenge| {
+            request_pairing_approval(
+                challenge_app.clone(),
+                challenge_pairing.clone(),
+                challenge,
+            )
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    activate_session(paired, app, pairing, workspace, None).await
+}
+
+async fn request_pairing_approval(
+    app: tauri::AppHandle,
+    pairing: Arc<PairingInner>,
+    challenge: SessionChallenge,
+) -> bool {
+    use tauri::Emitter;
+    let request_id = format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT_PAIRING_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let (approve, result) = oneshot::channel();
+    if let Ok(mut pending) = pairing.pending.lock() {
+        pending.insert(request_id.clone(), approve);
+    } else {
+        return false;
+    }
+    let event = PairingChallengeView {
+        request_id: request_id.clone(),
+        local_device: challenge.local_device.0,
+        peer_device: challenge.peer_device.0,
+        verification_code: challenge.verification_code,
+    };
+    if app.emit("pairing-challenge", event).is_err() {
+        if let Ok(mut pending) = pairing.pending.lock() {
+            pending.remove(&request_id);
+        }
+        return false;
+    }
+    let approved = tokio::time::timeout(std::time::Duration::from_secs(120), result)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or(false);
+    if let Ok(mut pending) = pairing.pending.lock() {
+        pending.remove(&request_id);
+    }
+    approved
+}
+
+async fn activate_session(
+    paired: PairedTransport<tokio::net::TcpStream>,
+    completion_app: tauri::AppHandle,
+    pairing: Arc<PairingInner>,
+    workspace: Arc<Mutex<Option<Arc<SharedWorkspace>>>>,
+    expected_peer: Option<String>,
+) -> Result<PairingResult, String> {
+    use tauri::Emitter;
     let peer_device_id = paired.peer_device().0.clone();
     if expected_peer
         .as_deref()
@@ -426,8 +531,10 @@ async fn run_pairing(
         );
     }
     let (sender, receiver, approval) = paired.into_encrypted();
-    let approval = approval.ok_or("pairing approval missing")?;
-    persist_approval(&approval)?;
+    let is_new_pairing = approval.is_some();
+    if let Some(approval) = approval {
+        persist_approval(&approval)?;
+    }
     let has_workspace = workspace
         .lock()
         .map_err(|_| "workspace state is unavailable")?
@@ -444,10 +551,11 @@ async fn run_pairing(
         peer_device_id,
         trusted: true,
         transport_active: true,
-        detail: if has_workspace {
-            "Both users approved; the encrypted transport is active and this device is serving its authorized workspace. Input, display, and live window services are not active yet.".into()
-        } else {
-            "Both users approved; the encrypted transport is active. Choose a Shared Workspace folder to enable this device's host-side file service. Input, display, and live window services are not active yet.".into()
+        detail: match (is_new_pairing, has_workspace) {
+            (true, true) => "Both users approved; the encrypted transport is active and this device is serving its authorized workspace. Input, display, and live window services are not active yet.".into(),
+            (true, false) => "Both users approved; the encrypted transport is active. Choose a Shared Workspace folder to enable this device's host-side file service. Input, display, and live window services are not active yet.".into(),
+            (false, true) => "The previously approved peer identity was authenticated with fresh keys; the encrypted transport is active and this device is serving its authorized workspace. Input, display, and live window services are not active yet.".into(),
+            (false, false) => "The previously approved peer identity was authenticated with fresh keys; the encrypted transport is active. Choose a Shared Workspace folder to enable this device's host-side file service. Input, display, and live window services are not active yet.".into(),
         },
     };
     let peer_for_task = result.peer_device_id.clone();
@@ -953,6 +1061,8 @@ fn main() {
             start_local_network,
             discover_local_peers,
             pair_with_peer,
+            reconnect_trusted_peer,
+            list_trusted_peers,
             respond_to_pairing,
             disconnect_peer,
             list_remote_workspace,

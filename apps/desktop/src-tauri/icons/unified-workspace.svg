@@ -1,11 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#2458c6"/>
-  <path d="M143 139h178a30 30 0 0 1 30 30v152a30 30 0 0 1-30 30H143a30 30 0 0 1-30-30V169a30 30 0 0 1 30-30Z" fill="#fff"/>
-  <path d="M113 181h238" stroke="#dce7ff" stroke-width="22"/>
-  <circle cx="145" cy="160" r="7" fill="#2458c6"/>
-  <circle cx="168" cy="160" r="7" fill="#2458c6"/>
-  <path d="M212 247h-36v38h36m-36-19h52" fill="none" stroke="#2458c6" stroke-linecap="round" stroke-linejoin="round" stroke-width="18"/>
-  <path d="M256 300h114a28 28 0 0 1 28 28v92a28 28 0 0 1-28 28h-94a28 28 0 0 1-28-28V300Z" fill="#bcd2ff" stroke="#fff" stroke-width="18"/>
-  <path d="M285 347h59m-59 34h59" stroke="#2458c6" stroke-linecap="round" stroke-width="16"/>
-  <circle cx="383" cy="135" r="32" fill="#70dfb1" stroke="#2458c6" stroke-width="14"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="field" x1="12" y1="8" x2="118" y2="120" gradientUnits="userSpaceOnUse"><stop stop-color="#172B57"/><stop offset="1" stop-color="#101A32"/></linearGradient>
+    <linearGradient id="signal" x1="34" y1="92" x2="96" y2="34" gradientUnits="userSpaceOnUse"><stop stop-color="#42E3BE"/><stop offset="1" stop-color="#78F2D3"/></linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="30" fill="url(#field)"/>
+  <path d="M31 25h38a8 8 0 0 1 8 8v29a8 8 0 0 1-8 8H31a8 8 0 0 1-8-8V33a8 8 0 0 1 8-8Z" fill="#F7FAFF"/>
+  <path d="M87 58h10a8 8 0 0 1 8 8v29a8 8 0 0 1-8 8H59a8 8 0 0 1-8-8V88" fill="#9FB8F2"/>
+  <path d="M43 70v10m13-10v10" stroke="#F7FAFF" stroke-width="6" stroke-linecap="round"/>
+  <path d="M37 40h25" stroke="#B8C8E8" stroke-width="5" stroke-linecap="round"/>
+  <path d="M37 53h13" stroke="#D8E1F1" stroke-width="4" stroke-linecap="round"/>
+  <path d="M59 87 75 71a10 10 0 0 1 14 0l3 3" fill="none" stroke="url(#signal)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="m82 59 12 1-1 12" fill="none" stroke="url(#signal)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="89" cy="87" r="3.5" fill="#182B53"/><circle cx="100" cy="87" r="3.5" fill="#182B53"/>
 </svg>

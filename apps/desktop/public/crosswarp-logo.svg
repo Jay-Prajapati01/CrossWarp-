@@ -1,20 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
   <title id="title">CrossWarp</title>
+  <desc id="desc">Two connected displays form a forward-moving cross-device path.</desc>
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#173B9D"/>
-      <stop offset="1" stop-color="#2D72E8"/>
+    <linearGradient id="field" x1="12" y1="8" x2="118" y2="120" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#172B57"/>
+      <stop offset="1" stop-color="#101A32"/>
     </linearGradient>
-    <linearGradient id="warp" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#8DF2D0"/>
-      <stop offset="1" stop-color="#45D4C5"/>
+    <linearGradient id="signal" x1="34" y1="92" x2="96" y2="34" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#42E3BE"/>
+      <stop offset="1" stop-color="#78F2D3"/>
     </linearGradient>
   </defs>
-  <rect x="4" y="4" width="120" height="120" rx="31" fill="url(#bg)"/>
-  <rect x="22" y="26" width="55" height="43" rx="8" fill="#F7FAFF"/>
-  <path d="M37 80h25" stroke="#D4E3FF" stroke-width="7" stroke-linecap="round"/>
-  <rect x="51" y="58" width="55" height="43" rx="8" fill="#C9D9FF" stroke="#F7FAFF" stroke-width="4"/>
-  <path d="M34 46h20M76 80h17" stroke="#315FC4" stroke-width="5" stroke-linecap="round"/>
-  <path d="M43 59c5 6 11 9 19 10m17-11c-4-7-10-11-18-13" fill="none" stroke="url(#warp)" stroke-width="7" stroke-linecap="round"/>
-  <path d="m59 39 7 6-9 4m-1 14-7 6 9 3" fill="none" stroke="#8DF2D0" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="4" y="4" width="120" height="120" rx="30" fill="url(#field)"/>
+  <path d="M31 25h38a8 8 0 0 1 8 8v29a8 8 0 0 1-8 8H31a8 8 0 0 1-8-8V33a8 8 0 0 1 8-8Z" fill="#F7FAFF"/>
+  <path d="M87 58h10a8 8 0 0 1 8 8v29a8 8 0 0 1-8 8H59a8 8 0 0 1-8-8V88" fill="#9FB8F2"/>
+  <path d="M43 70v10m13-10v10" stroke="#F7FAFF" stroke-width="6" stroke-linecap="round"/>
+  <path d="M37 40h25" stroke="#B8C8E8" stroke-width="5" stroke-linecap="round"/>
+  <path d="M37 53h13" stroke="#D8E1F1" stroke-width="4" stroke-linecap="round"/>
+  <path d="M59 87 75 71a10 10 0 0 1 14 0l3 3" fill="none" stroke="url(#signal)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="m82 59 12 1-1 12" fill="none" stroke="url(#signal)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="89" cy="87" r="3.5" fill="#182B53"/>
+  <circle cx="100" cy="87" r="3.5" fill="#182B53"/>
 </svg>

@@ -9,7 +9,7 @@ Date: 2026-10-18 (Asia/Calcutta)
 - Payload limits and per-service message capacities bound queued data. Input/control receives a smaller payload cap; video producers have nonblocking sends to avoid blocking capture on a full queue. Video receive is best-effort; input and files use lossless backpressure.
 - The writer prioritizes input and interactive video, gives display video bounded opportunities while input/window traffic continues, and forces a file turn after at most eight non-file records when file work is queued.
 - Session cancellation aborts and closes both transport workers, including when cancellation happens before their supervisor futures are first polled.
-- The wire format changed, so the authenticated protocol is version 2 and v1 peers fail the protocol-version check during handshake validation. A regression test verifies the rejection. Both endpoints must run compatible v2 builds.
+- The four-service wire format was introduced in protocol version 2. Protocol version 3 adds an explicit pairing-versus-trusted-reconnect handshake discriminator; earlier protocol versions fail the protocol-version check. Both endpoints must run compatible v3 builds.
 
 ## Verification
 

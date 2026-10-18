@@ -76,10 +76,19 @@ pub enum TransportError {
 struct Hello {
     protocol_version: u16,
     role: HandshakeRole,
+    authentication: HandshakeAuthentication,
     device_id: DeviceId,
     signing_public_key: [u8; 32],
     nonce: [u8; 32],
     ephemeral_public_key: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum HandshakeAuthentication {
+    Pairing,
+    TrustedReconnect,
+    Acceptor,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -156,7 +165,7 @@ where
 /// derived. The resulting stream is end-to-end encrypted independently of its
 /// underlying transport.
 pub async fn pair_over_stream<S, F, Fut>(
-    mut stream: S,
+    stream: S,
     identity: &DeviceIdentity,
     role: HandshakeRole,
     confirm: F,
@@ -166,70 +175,47 @@ where
     F: FnOnce(SessionChallenge) -> Fut,
     Fut: Future<Output = bool>,
 {
-    let (hello, ephemeral_secret) = make_hello(identity, role);
-    write_handshake(&mut stream, &HandshakeMessage::Hello(hello.clone())).await?;
-    let peer_hello = match read_handshake(&mut stream).await? {
-        HandshakeMessage::Hello(hello) => hello,
-        _ => return Err(TransportError::InvalidHandshake),
-    };
-    validate_hello(&hello, &peer_hello)?;
-
-    let transcript = make_transcript(&hello, &peer_hello, role);
-    let local_device = hello.device_id.clone();
-    let peer_device = peer_hello.device_id.clone();
-    let challenge = SessionChallenge {
-        local_device: local_device.clone(),
-        peer_device: peer_device.clone(),
-        verification_code: transcript.displayed_code.clone(),
-    };
-    let local_approved = confirm(challenge.clone()).await;
-    write_handshake(
-        &mut stream,
-        &HandshakeMessage::Decision {
-            approved: local_approved,
-        },
-    )
-    .await?;
-    let peer_approved = match read_handshake(&mut stream).await? {
-        HandshakeMessage::Decision { approved } => approved,
-        _ => return Err(TransportError::InvalidHandshake),
-    };
-    if !local_approved || !peer_approved {
-        return Err(TransportError::PairingRejected);
-    }
-
-    let mut approval = PairingApproval::new(transcript.clone(), local_device, peer_device.clone())?;
-    let local_proof = approval.approve_local(identity)?;
-    write_handshake(&mut stream, &HandshakeMessage::Proof(local_proof)).await?;
-    let peer_proof = match read_handshake(&mut stream).await? {
-        HandshakeMessage::Proof(proof) => proof,
-        _ => return Err(TransportError::InvalidHandshake),
-    };
-    approval
-        .record_peer_approval(peer_proof)
-        .map_err(|_| TransportError::InvalidSignature)?;
-
-    let peer_public = X25519PublicKey::from(peer_hello.ephemeral_public_key);
-    let shared_secret = ephemeral_secret.diffie_hellman(&peer_public);
-    if !shared_secret.was_contributory() {
-        return Err(TransportError::InvalidEphemeralKey);
-    }
-    let mut secret_bytes = *shared_secret.as_bytes();
-    let keys = derive_session_keys(&secret_bytes, &transcript, role)?;
-    zeroize::Zeroize::zeroize(&mut secret_bytes);
-
-    Ok(PairedTransport {
+    handshake(
         stream,
-        keys,
-        peer_device: peer_hello.device_id,
-        approval: Some(approval),
-    })
+        identity,
+        role,
+        HandshakeAuthentication::Pairing,
+        None,
+        None,
+        confirm,
+    )
+    .await
+}
+
+/// Accepts a new pairing or an authenticated reconnect. Reconnect is accepted
+/// only when the remote identity and signing key match a mutually approved peer.
+pub async fn accept_pair_or_trusted_over_stream<S, F, Fut>(
+    stream: S,
+    identity: &DeviceIdentity,
+    trusted_peers: &[TrustedPeer],
+    confirm: F,
+) -> Result<PairedTransport<S>, TransportError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    F: FnOnce(SessionChallenge) -> Fut,
+    Fut: Future<Output = bool>,
+{
+    handshake(
+        stream,
+        identity,
+        HandshakeRole::Responder,
+        HandshakeAuthentication::Acceptor,
+        None,
+        Some(trusted_peers),
+        confirm,
+    )
+    .await
 }
 
 /// Authenticates a returning peer against the public key stored after the original
 /// two-sided approval. Fresh signatures and ephemeral DH keys prevent replay.
 pub async fn connect_trusted_over_stream<S>(
-    mut stream: S,
+    stream: S,
     identity: &DeviceIdentity,
     role: HandshakeRole,
     trusted_peer: &TrustedPeer,
@@ -237,28 +223,111 @@ pub async fn connect_trusted_over_stream<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let (hello, ephemeral_secret) = make_hello(identity, role);
+    handshake(
+        stream,
+        identity,
+        role,
+        HandshakeAuthentication::TrustedReconnect,
+        Some(trusted_peer),
+        None,
+        |_| async { false },
+    )
+    .await
+}
+
+async fn handshake<S, F, Fut>(
+    mut stream: S,
+    identity: &DeviceIdentity,
+    role: HandshakeRole,
+    authentication: HandshakeAuthentication,
+    expected_peer: Option<&TrustedPeer>,
+    trusted_peers: Option<&[TrustedPeer]>,
+    confirm: F,
+) -> Result<PairedTransport<S>, TransportError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    F: FnOnce(SessionChallenge) -> Fut,
+    Fut: Future<Output = bool>,
+{
+    let (hello, ephemeral_secret) = make_hello(identity, role, authentication);
     write_handshake(&mut stream, &HandshakeMessage::Hello(hello.clone())).await?;
     let peer_hello = match read_handshake(&mut stream).await? {
         HandshakeMessage::Hello(hello) => hello,
         _ => return Err(TransportError::InvalidHandshake),
     };
     validate_hello(&hello, &peer_hello)?;
-    if peer_hello.device_id != trusted_peer.device_id
-        || peer_hello.signing_public_key != trusted_peer.public_key
-    {
-        return Err(TransportError::IdentityMismatch);
-    }
 
     let transcript = make_transcript(&hello, &peer_hello, role);
-    let local_proof = identity.prove_bytes(transcript.signing_bytes());
-    write_handshake(&mut stream, &HandshakeMessage::Proof(local_proof)).await?;
-    let peer_proof = match read_handshake(&mut stream).await? {
-        HandshakeMessage::Proof(proof) => proof,
-        _ => return Err(TransportError::InvalidHandshake),
+    let trusted_reconnect = authentication == HandshakeAuthentication::TrustedReconnect
+        || peer_hello.authentication == HandshakeAuthentication::TrustedReconnect;
+    let approval = if trusted_reconnect {
+        if authentication == HandshakeAuthentication::Pairing
+            || peer_hello.authentication == HandshakeAuthentication::Pairing
+        {
+            return Err(TransportError::InvalidHandshake);
+        }
+        let trusted_peer = expected_peer
+            .filter(|peer| peer.device_id == peer_hello.device_id)
+            .or_else(|| {
+                trusted_peers.and_then(|peers| {
+                    peers
+                        .iter()
+                        .find(|peer| peer.device_id == peer_hello.device_id)
+                })
+            })
+            .ok_or(TransportError::IdentityMismatch)?;
+        if peer_hello.signing_public_key != trusted_peer.public_key {
+            return Err(TransportError::IdentityMismatch);
+        }
+        let local_proof = identity.prove_bytes(transcript.signing_bytes());
+        write_handshake(&mut stream, &HandshakeMessage::Proof(local_proof)).await?;
+        let peer_proof = match read_handshake(&mut stream).await? {
+            HandshakeMessage::Proof(proof) => proof,
+            _ => return Err(TransportError::InvalidHandshake),
+        };
+        DeviceIdentity::verify(&trusted_peer.device_id, &transcript, &peer_proof)
+            .map_err(|_| TransportError::InvalidSignature)?;
+        None
+    } else {
+        if authentication == HandshakeAuthentication::TrustedReconnect {
+            return Err(TransportError::InvalidHandshake);
+        }
+        let challenge = SessionChallenge {
+            local_device: hello.device_id.clone(),
+            peer_device: peer_hello.device_id.clone(),
+            verification_code: transcript.displayed_code.clone(),
+        };
+        let local_approved = confirm(challenge).await;
+        write_handshake(
+            &mut stream,
+            &HandshakeMessage::Decision {
+                approved: local_approved,
+            },
+        )
+        .await?;
+        let peer_approved = match read_handshake(&mut stream).await? {
+            HandshakeMessage::Decision { approved } => approved,
+            _ => return Err(TransportError::InvalidHandshake),
+        };
+        if !local_approved || !peer_approved {
+            return Err(TransportError::PairingRejected);
+        }
+        let mut approval = PairingApproval::new(
+            transcript.clone(),
+            hello.device_id.clone(),
+            peer_hello.device_id.clone(),
+        )?;
+        let local_proof = approval.approve_local(identity)?;
+        write_handshake(&mut stream, &HandshakeMessage::Proof(local_proof)).await?;
+        let peer_proof = match read_handshake(&mut stream).await? {
+            HandshakeMessage::Proof(proof) => proof,
+            _ => return Err(TransportError::InvalidHandshake),
+        };
+        approval
+            .record_peer_approval(peer_proof)
+            .map_err(|_| TransportError::InvalidSignature)?;
+        Some(approval)
     };
-    DeviceIdentity::verify(&trusted_peer.device_id, &transcript, &peer_proof)
-        .map_err(|_| TransportError::InvalidSignature)?;
 
     let peer_public = X25519PublicKey::from(peer_hello.ephemeral_public_key);
     let shared_secret = ephemeral_secret.diffie_hellman(&peer_public);
@@ -268,15 +337,20 @@ where
     let mut secret_bytes = *shared_secret.as_bytes();
     let keys = derive_session_keys(&secret_bytes, &transcript, role)?;
     zeroize::Zeroize::zeroize(&mut secret_bytes);
+
     Ok(PairedTransport {
         stream,
         keys,
         peer_device: peer_hello.device_id,
-        approval: None,
+        approval,
     })
 }
 
-fn make_hello(identity: &DeviceIdentity, role: HandshakeRole) -> (Hello, EphemeralSecret) {
+fn make_hello(
+    identity: &DeviceIdentity,
+    role: HandshakeRole,
+    authentication: HandshakeAuthentication,
+) -> (Hello, EphemeralSecret) {
     let ephemeral_secret = EphemeralSecret::random_from_rng(OsRng);
     let ephemeral_public_key = X25519PublicKey::from(&ephemeral_secret).to_bytes();
     let mut nonce = [0u8; 32];
@@ -285,6 +359,7 @@ fn make_hello(identity: &DeviceIdentity, role: HandshakeRole) -> (Hello, Ephemer
         Hello {
             protocol_version: PROTOCOL_VERSION,
             role,
+            authentication,
             device_id: identity.device_id(),
             signing_public_key: identity.public_key(),
             nonce,
@@ -565,6 +640,7 @@ mod tests {
             device_id: initiator_identity.device_id(),
             public_key: initiator_identity.public_key(),
         };
+        let responder_trusted_peers = [responder_peer];
         let (initiator_stream, responder_stream) = duplex(32 * 1024);
         let (initiator, responder) = tokio::join!(
             connect_trusted_over_stream(
@@ -573,11 +649,11 @@ mod tests {
                 HandshakeRole::Initiator,
                 &initiator_peer,
             ),
-            connect_trusted_over_stream(
+            accept_pair_or_trusted_over_stream(
                 responder_stream,
                 &responder_identity,
-                HandshakeRole::Responder,
-                &responder_peer,
+                &responder_trusted_peers,
+                |_| async { false },
             )
         );
         let initiator = initiator.unwrap();
@@ -592,6 +668,56 @@ mod tests {
         );
         sent.unwrap();
         assert_eq!(received.unwrap(), b"reconnected under the stored key pin");
+    }
+
+    #[tokio::test]
+    async fn acceptor_still_requires_two_sided_approval_for_a_new_peer() {
+        let (initiator_identity, responder_identity) =
+            (DeviceIdentity::generate(), DeviceIdentity::generate());
+        let (initiator_stream, responder_stream) = duplex(32 * 1024);
+        let (initiator, responder) = tokio::join!(
+            pair_over_stream(
+                initiator_stream,
+                &initiator_identity,
+                HandshakeRole::Initiator,
+                |challenge| async move { challenge.verification_code.len() == 6 }
+            ),
+            accept_pair_or_trusted_over_stream(
+                responder_stream,
+                &responder_identity,
+                &[],
+                |challenge| async move { challenge.verification_code.len() == 6 }
+            )
+        );
+        assert!(initiator.unwrap().approval().is_some());
+        assert!(responder.unwrap().approval().is_some());
+    }
+
+    #[tokio::test]
+    async fn acceptor_rejects_trusted_reconnect_from_unknown_peer() {
+        let (initiator_identity, responder_identity) =
+            (DeviceIdentity::generate(), DeviceIdentity::generate());
+        let initiator_peer = TrustedPeer {
+            device_id: responder_identity.device_id(),
+            public_key: responder_identity.public_key(),
+        };
+        let (initiator_stream, responder_stream) = duplex(32 * 1024);
+        let (initiator, responder) = tokio::join!(
+            connect_trusted_over_stream(
+                initiator_stream,
+                &initiator_identity,
+                HandshakeRole::Initiator,
+                &initiator_peer,
+            ),
+            accept_pair_or_trusted_over_stream(
+                responder_stream,
+                &responder_identity,
+                &[],
+                |_| async { panic!("unknown reconnect must not request first-pairing approval") }
+            )
+        );
+        assert!(initiator.is_err());
+        assert!(matches!(responder, Err(TransportError::IdentityMismatch)));
     }
 
     #[tokio::test]
@@ -676,8 +802,16 @@ mod tests {
     fn incompatible_wire_protocol_is_rejected_during_handshake_validation() {
         let initiator_identity = DeviceIdentity::generate();
         let responder_identity = DeviceIdentity::generate();
-        let (local, _) = make_hello(&initiator_identity, HandshakeRole::Initiator);
-        let (mut peer, _) = make_hello(&responder_identity, HandshakeRole::Responder);
+        let (local, _) = make_hello(
+            &initiator_identity,
+            HandshakeRole::Initiator,
+            HandshakeAuthentication::Pairing,
+        );
+        let (mut peer, _) = make_hello(
+            &responder_identity,
+            HandshakeRole::Responder,
+            HandshakeAuthentication::Pairing,
+        );
         peer.protocol_version = PROTOCOL_VERSION - 1;
         assert!(matches!(
             validate_hello(&local, &peer),

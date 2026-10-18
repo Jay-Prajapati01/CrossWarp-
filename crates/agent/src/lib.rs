@@ -51,8 +51,8 @@ pub use shared_files::{
     SharedEntry, SharedEntryKind, SharedFilesError, SharedWorkspace, WorkspaceUpload,
 };
 pub use transport::{
-    connect_trusted_over_stream, pair_over_stream, EncryptedReceiver, EncryptedSender,
-    HandshakeRole, PairedTransport, SessionChallenge, SessionKeys, TransportError,
-    MAX_ENCRYPTED_MESSAGE,
+    accept_pair_or_trusted_over_stream, connect_trusted_over_stream, pair_over_stream,
+    EncryptedReceiver, EncryptedSender, HandshakeRole, PairedTransport, SessionChallenge,
+    SessionKeys, TransportError, MAX_ENCRYPTED_MESSAGE,
 };
 pub use trust::{DeviceIdentity, PairingApproval, PairingTranscript, SignatureProof, TrustError};
