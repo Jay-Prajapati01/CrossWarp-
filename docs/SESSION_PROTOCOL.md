@@ -13,6 +13,10 @@ This guide describes the current implementation in `crates/agent/src`. For code-
 - The app verifies the authenticated remote device identity against the discovered device ID after handshake.
 - LAN discovery is best-effort. Multicast filtering, host firewall rules, guest Wi-Fi/client isolation, VPN routing, and multiple active interfaces can prevent discovery or peer connectivity.
 
+## Shared transport session identity
+
+After the authenticated handshake succeeds, both endpoints derive the same `SessionId` by hashing the domain separator `crosswarp-session-id-v1\0` with the canonical signed pairing transcript and using the first 16 digest bytes as the UUID. The transcript contains both device identities, fresh endpoint nonces, and ephemeral key material, so a reconnect gets a fresh correlation ID without another wire round trip. The session ID is metadata for binding input/media records and diagnostics; it is not a secret or an authorization token. Authorization still comes from the authenticated encrypted transport and explicit capability consent.
+
 ## Version 4 input-event schema
 
 Version 4 retains the version-3 pairing/reconnect discriminator and advances the wire compatibility number for the input-event contract. Wheel events now carry event-time screen coordinates so ownership is hit-tested under the pointer rather than using stale keyboard focus. Version 3 peers are rejected during handshake; both devices must run protocol v4 builds before input events can be used.

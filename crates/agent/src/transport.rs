@@ -4,7 +4,7 @@
 //! discovery/listener management are deliberately separate from this protocol.
 
 use crate::peer_store::TrustedPeer;
-use crate::protocol::{DeviceId, PROTOCOL_VERSION};
+use crate::protocol::{DeviceId, SessionId, PROTOCOL_VERSION};
 use crate::trust::{
     DeviceIdentity, PairingApproval, PairingTranscript, SignatureProof, TrustError,
 };
@@ -116,6 +116,8 @@ impl Drop for SessionKeys {
 pub struct PairedTransport<S> {
     stream: S,
     keys: SessionKeys,
+    session_id: SessionId,
+    local_device: DeviceId,
     peer_device: DeviceId,
     approval: Option<PairingApproval>,
 }
@@ -126,6 +128,16 @@ where
 {
     pub fn peer_device(&self) -> &DeviceId {
         &self.peer_device
+    }
+
+    /// Correlation ID derived from the authenticated, fresh handshake transcript.
+    /// Both endpoints of this transport obtain the same value.
+    pub fn session_id(&self) -> SessionId {
+        self.session_id
+    }
+
+    pub fn local_device(&self) -> &DeviceId {
+        &self.local_device
     }
 
     pub fn approval(&self) -> Option<&PairingApproval> {
@@ -337,10 +349,13 @@ where
     let mut secret_bytes = *shared_secret.as_bytes();
     let keys = derive_session_keys(&secret_bytes, &transcript, role)?;
     zeroize::Zeroize::zeroize(&mut secret_bytes);
+    let session_id = derive_session_id(&transcript);
 
     Ok(PairedTransport {
         stream,
         keys,
+        session_id,
+        local_device: hello.device_id,
         peer_device: peer_hello.device_id,
         approval,
     })
@@ -425,6 +440,16 @@ fn derive_session_keys(
         send_key,
         receive_key,
     })
+}
+
+fn derive_session_id(transcript: &PairingTranscript) -> SessionId {
+    let mut digest = Sha256::new();
+    digest.update(b"crosswarp-session-id-v1\0");
+    digest.update(transcript.signing_bytes());
+    let digest = digest.finalize();
+    let mut uuid_bytes = [0u8; 16];
+    uuid_bytes.copy_from_slice(&digest[..16]);
+    SessionId(uuid::Uuid::from_bytes(uuid_bytes))
 }
 
 async fn write_handshake<S: AsyncWrite + Unpin>(
@@ -566,6 +591,19 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tokio::io::duplex;
 
+    #[test]
+    fn derived_session_id_is_stable_and_binds_the_complete_transcript() {
+        let transcript =
+            PairingTranscript::create(DeviceId("initiator".into()), DeviceId("responder".into()));
+        assert_eq!(
+            derive_session_id(&transcript),
+            derive_session_id(&transcript)
+        );
+        let mut changed = transcript.clone();
+        changed.responder_nonce[0] ^= 1;
+        assert_ne!(derive_session_id(&transcript), derive_session_id(&changed));
+    }
+
     #[tokio::test]
     async fn two_sides_compare_code_authenticate_and_exchange_encrypted_data() {
         let (initiator_identity, responder_identity) =
@@ -601,6 +639,9 @@ mod tests {
         let responder = responder.unwrap();
         assert_eq!(initiator.peer_device(), &responder_identity.device_id());
         assert_eq!(responder.peer_device(), &initiator_identity.device_id());
+        assert_eq!(initiator.local_device(), &initiator_identity.device_id());
+        assert_eq!(responder.local_device(), &responder_identity.device_id());
+        assert_eq!(initiator.session_id(), responder.session_id());
         assert!(initiator.approval().unwrap().is_mutually_approved());
         assert!(responder.approval().unwrap().is_mutually_approved());
         assert_eq!(
@@ -658,6 +699,7 @@ mod tests {
         );
         let initiator = initiator.unwrap();
         let responder = responder.unwrap();
+        assert_eq!(initiator.session_id(), responder.session_id());
         assert!(initiator.approval().is_none());
         assert!(responder.approval().is_none());
         let (mut initiator_sender, _, _) = initiator.into_encrypted();

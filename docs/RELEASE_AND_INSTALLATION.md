@@ -6,6 +6,8 @@
 
 The current protocol-v4 build produced an x64 NSIS bundle at `artifacts/protocol-v4-build/release/bundle/nsis/CrossWarp_0.1.0_x64-setup.exe`. The exact hash, command and limits are in [protocol-v4 package evidence](phase1-evidence/protocol-v4-package-build.md). Standard `npm run build` uses the default Cargo target directory; set `CARGO_TARGET_DIR` to a separate path when the running app locks that output executable. Packaging success is not installation verification; this package has not passed installation or second-PC acceptance.
 
+The latest shared-session-identity source also built an unsigned x64 installer at `artifacts/session-identity-build/release/bundle/nsis/CrossWarp_0.1.0_x64-setup.exe`; see [package build evidence](phase1-evidence/session-identity-package-build.md). It is still an engineering package, not a production release, and has not been installed or run. Its protocol-v4 peers must be upgraded together before cross-PC session checks against this source.
+
 ## Driver boundary
 
 The current IDD work builds Microsoft's sample and generates an unsigned catalog-bearing package. It is not a CrossWarp production IDD, is not installed or loaded, and does not provide an extended display. Never disable Secure Boot or signature enforcement as a shortcut. A development proof requires an isolated, recoverable test machine and supported test-signing configuration. A production release needs a valid Microsoft signing/submission route and applicable validation for the declared OS/architecture matrix. See [IDD evidence](phase0-evidence/IDD-sample-build.md) and [ADR-0003](decisions/ADR-0003-extended-display.md).

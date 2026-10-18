@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 use unified_workspace_agent::protocol::{Capability, CapabilityState, DeviceId, SessionId};
+use unified_workspace_agent::windows_input::{InputCapture, InputKind};
 use unified_workspace_agent::{
     accept_pair_or_trusted_over_stream, connect_trusted_over_stream, pair_over_stream,
     spawn_file_rpc, spawn_session_transport, DeviceIdentity, FileRequest, FileResponse,
@@ -14,7 +15,6 @@ use unified_workspace_agent::{
     PairingApproval, PeerBrowser, SessionChallenge, SessionChannels, SessionCoordinator,
     SharedEntry, SharedWorkspace, TrustedPeerStore, MAX_RPC_READ_CHUNK, MAX_RPC_UPLOAD_CHUNK,
 };
-use unified_workspace_agent::windows_input::{InputCapture, InputKind};
 
 #[derive(Clone, Default)]
 struct WorkspaceState(Arc<Mutex<Option<Arc<SharedWorkspace>>>>);
@@ -99,6 +99,7 @@ struct PairAddress {
 #[derive(Serialize)]
 struct PairingResult {
     peer_device_id: String,
+    session_id: String,
     trusted: bool,
     transport_active: bool,
     detail: String,
@@ -167,7 +168,10 @@ fn start_input_capture_diagnostic(
         .0
         .lock()
         .map_err(|_| "input diagnostic state is unavailable")?;
-    if active.as_ref().is_some_and(|handle| !handle.task.is_finished()) {
+    if active
+        .as_ref()
+        .is_some_and(|handle| !handle.task.is_finished())
+    {
         return Err("the local input capture diagnostic is already running".into());
     }
 
@@ -507,14 +511,10 @@ async fn reconnect_trusted_peer(
     let stream = tokio::net::TcpStream::connect(address)
         .await
         .map_err(|error| format!("could not connect to discovered peer: {error}"))?;
-    let paired = connect_trusted_over_stream(
-        stream,
-        &identity,
-        HandshakeRole::Initiator,
-        &trusted_peer,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    let paired =
+        connect_trusted_over_stream(stream, &identity, HandshakeRole::Initiator, &trusted_peer)
+            .await
+            .map_err(|error| error.to_string())?;
     activate_session(
         paired,
         app,
@@ -611,20 +611,12 @@ async fn run_accept(
         .map_err(|error| error.to_string())?;
     let challenge_app = app.clone();
     let challenge_pairing = pairing.clone();
-    let paired = accept_pair_or_trusted_over_stream(
-        stream,
-        &identity,
-        &trusted_peers,
-        move |challenge| {
-            request_pairing_approval(
-                challenge_app.clone(),
-                challenge_pairing.clone(),
-                challenge,
-            )
-        },
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    let paired =
+        accept_pair_or_trusted_over_stream(stream, &identity, &trusted_peers, move |challenge| {
+            request_pairing_approval(challenge_app.clone(), challenge_pairing.clone(), challenge)
+        })
+        .await
+        .map_err(|error| error.to_string())?;
     activate_session(paired, app, pairing, workspace, None).await
 }
 
@@ -685,6 +677,7 @@ async fn activate_session(
             "authenticated identity differs from the discovered peer; connection closed".into(),
         );
     }
+    let session_id = paired.session_id();
     let (sender, receiver, approval) = paired.into_encrypted();
     let is_new_pairing = approval.is_some();
     if let Some(approval) = approval {
@@ -704,6 +697,7 @@ async fn activate_session(
     }
     let result = PairingResult {
         peer_device_id,
+        session_id: session_id.0.to_string(),
         trusted: true,
         transport_active: true,
         detail: match (is_new_pairing, has_workspace) {
@@ -771,7 +765,10 @@ fn persist_approval(approval: &PairingApproval) -> Result<(), String> {
     Ok(())
 }
 
-fn remote_file_client(pairing: &PairingState, peer_device_id: &str) -> Result<FileRpcClient, String> {
+fn remote_file_client(
+    pairing: &PairingState,
+    peer_device_id: &str,
+) -> Result<FileRpcClient, String> {
     pairing
         .0
         .clients
@@ -828,7 +825,11 @@ async fn read_remote_file_range(
         return Err("requested download chunk exceeds the RPC limit".into());
     }
     match remote_file_client(&pairing, &peer_device_id)?
-        .request(FileRequest::ReadRange { path, offset, length })
+        .request(FileRequest::ReadRange {
+            path,
+            offset,
+            length,
+        })
         .await
         .map_err(|error| error.to_string())?
     {
@@ -851,8 +852,12 @@ async fn download_remote_file_to_path(
     use tokio::io::AsyncWriteExt;
 
     let destination = std::path::PathBuf::from(destination_path);
-    let parent = destination.parent().ok_or("save location has no parent folder")?;
-    let name = destination.file_name().ok_or("save location has no file name")?;
+    let parent = destination
+        .parent()
+        .ok_or("save location has no parent folder")?;
+    let name = destination
+        .file_name()
+        .ok_or("save location has no file name")?;
     if name.is_empty()
         || !tokio::fs::metadata(parent)
             .await
@@ -1007,7 +1012,13 @@ async fn upload_remote_file(
     let emit_progress = |bytes_sent, complete| {
         let _ = app.emit(
             "remote-transfer-progress",
-            RemoteTransferProgress { peer_device_id: peer_device_id.clone(), direction: "upload", bytes_sent, total_bytes, complete },
+            RemoteTransferProgress {
+                peer_device_id: peer_device_id.clone(),
+                direction: "upload",
+                bytes_sent,
+                total_bytes,
+                complete,
+            },
         );
     };
     emit_progress(0, false);
@@ -1064,7 +1075,10 @@ async fn upload_remote_file(
                 confirmed: true,
             }
         } else {
-            FileRequest::CommitUpload { transfer, sha256: digest }
+            FileRequest::CommitUpload {
+                transfer,
+                sha256: digest,
+            }
         };
         match client
             .request(commit)
@@ -1095,7 +1109,11 @@ async fn rename_remote_entry(
     pairing: tauri::State<'_, PairingState>,
 ) -> Result<(), String> {
     match remote_file_client(&pairing, &peer_device_id)?
-        .request(FileRequest::Rename { source, destination, confirmed })
+        .request(FileRequest::Rename {
+            source,
+            destination,
+            confirmed,
+        })
         .await
         .map_err(|error| error.to_string())?
     {
@@ -1272,7 +1290,9 @@ mod tests {
         tokio::fs::create_dir(&root).await.unwrap();
         let destination = root.join("report.txt");
         let temporary = root.join(".crosswarp-transfer.part");
-        tokio::fs::write(&destination, b"old contents").await.unwrap();
+        tokio::fs::write(&destination, b"old contents")
+            .await
+            .unwrap();
         tokio::fs::write(&temporary, b"complete replacement")
             .await
             .unwrap();
@@ -1284,8 +1304,8 @@ mod tests {
             downloaded_digest,
             downloaded_digest,
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
 
         assert_eq!(
             tokio::fs::read(&destination).await.unwrap(),
@@ -1305,15 +1325,24 @@ mod tests {
         tokio::fs::create_dir(&root).await.unwrap();
         let destination = root.join("report.txt");
         let temporary = root.join(".crosswarp-transfer.part");
-        tokio::fs::write(&destination, b"original file").await.unwrap();
-        tokio::fs::write(&temporary, b"corrupt transfer").await.unwrap();
+        tokio::fs::write(&destination, b"original file")
+            .await
+            .unwrap();
+        tokio::fs::write(&temporary, b"corrupt transfer")
+            .await
+            .unwrap();
         let actual: [u8; 32] = sha2::Sha256::digest(b"corrupt transfer").into();
         let expected: [u8; 32] = sha2::Sha256::digest(b"peer expected bytes").into();
 
-        assert!(commit_download_file(&temporary, &destination, actual, expected)
-            .await
-            .is_err());
-        assert_eq!(tokio::fs::read(&destination).await.unwrap(), b"original file");
+        assert!(
+            commit_download_file(&temporary, &destination, actual, expected)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            tokio::fs::read(&destination).await.unwrap(),
+            b"original file"
+        );
         tokio::fs::remove_file(temporary).await.unwrap();
         tokio::fs::remove_dir_all(root).await.unwrap();
     }

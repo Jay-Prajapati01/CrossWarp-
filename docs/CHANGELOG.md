@@ -4,6 +4,10 @@ This log summarizes repository milestones for maintainers. Git history is the so
 
 ## Current development line
 
+### Shared authenticated-session identity (current working increment)
+
+Each successful pairing or trusted reconnect now derives the same transport `SessionId` on both endpoints from the authenticated fresh handshake transcript. The desktop reports the ID beside its trusted-peer state so future input and media records can bind to the actual live connection. Pairing and reconnect loopback tests verify both sides agree. This adds session metadata only; it does not activate input routing, display streaming, window portals, or physical acceptance.
+
 ### Input hit-testing correction (current working increment)
 
 Native wheel events now retain their cursor coordinates, and ownership routing hit-tests the wheel location without stealing keyboard focus. The wire compatibility number advances to protocol v4 so older clients are rejected instead of silently misreading the event. A new agent controller combines ownership decisions with encrypted sending; it leaves local events local and releases held keys to the original remote owner. The desktop capture path, capture suppression, remote injection and user consent are still outstanding.
