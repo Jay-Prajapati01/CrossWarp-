@@ -81,6 +81,8 @@ struct PairingInner {
     window_frames: Mutex<HashMap<String, RemoteWindowFrame>>,
     media_contexts: Mutex<HashMap<String, (SessionId, DeviceId)>>,
     window_share_stops: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    window_share_targets: Mutex<HashMap<String, (u64, u64)>>,
+    window_control_streams: Mutex<HashMap<String, (u64, u64)>>,
 }
 
 struct AbortChildrenOnDrop(Vec<tokio::task::AbortHandle>);
@@ -156,12 +158,23 @@ struct CapturableWindowView {
 #[serde(tag = "action", rename_all = "snake_case")]
 enum WindowControlAction {
     Stop,
+    Input { source_stream_id: u64, event: WindowPortalInput },
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum WindowPortalInput {
+    PointerMove { x: u16, y: u16 },
+    PointerButton { x: u16, y: u16, button: u8, down: bool },
+    PointerWheel { x: u16, y: u16, delta: i32, horizontal: bool },
+    Key { virtual_key: u16, scan_code: u16, extended: bool, down: bool },
 }
 
 static NEXT_PAIRING_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 static NEXT_DOWNLOAD_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 static NEXT_WINDOW_SHARE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 static NEXT_VIDEO_STREAM_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static NEXT_WINDOW_CONTROL_STREAM_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX / 2);
 
 #[derive(Serialize)]
 struct NetworkStatus {
@@ -718,6 +731,7 @@ async fn start_window_share(
     let task_peer = peer_device_id.clone();
     let task_app = app.clone();
     let stream_id = NEXT_VIDEO_STREAM_ID.fetch_add(1, Ordering::Relaxed);
+    pairing.0.window_share_targets.lock().map_err(|_| "window target state is unavailable")?.insert(peer_device_id.clone(), (stream_id, hwnd));
     tokio::spawn(async move {
         let started = std::time::Instant::now();
         let mut sent_sequence = 0u64;
@@ -777,6 +791,11 @@ async fn start_window_share(
                 .is_some_and(|current| Arc::ptr_eq(current, &task_stop))
             {
                 active.remove(&task_peer);
+            }
+        }
+        if let Ok(mut targets) = task_pairing.window_share_targets.lock() {
+            if targets.get(&task_peer).is_some_and(|current| *current == (stream_id, hwnd)) {
+                targets.remove(&task_peer);
             }
         }
         let _ = task_app.emit("window-share-ended", &task_peer);
@@ -853,6 +872,37 @@ async fn revoke_remote_window_preview(
         frames.remove(&peer_device_id);
     }
     Ok(())
+}
+
+#[tauri::command]
+async fn send_window_portal_input(
+    peer_device_id: String,
+    source_stream_id: u64,
+    event: WindowPortalInput,
+    pairing: tauri::State<'_, PairingState>,
+) -> Result<(), String> {
+    let latest = pairing.0.window_frames.lock().map_err(|_| "window preview state is unavailable")?.get(&peer_device_id).cloned().ok_or("no approved live preview")?;
+    if latest.stream_id != source_stream_id || latest.received_at_unix_ms.saturating_add(1500) < now_unix_ms() {
+        return Err("the live preview is stale or belongs to another stream".into());
+    }
+    if let WindowPortalInput::PointerButton { button, .. } = event { if !(1..=5).contains(&button) { return Err("invalid pointer button".into()); } }
+    if let WindowPortalInput::Key { virtual_key, .. } = event { if virtual_key > 0xFF { return Err("invalid virtual key".into()); } }
+    let (session_id, _) = pairing.0.media_contexts.lock().map_err(|_| "session media state is unavailable")?.get(&peer_device_id).cloned().ok_or("peer has no active authenticated media session")?;
+    let channel = pairing.0.services.lock().map_err(|_| "session service state is unavailable")?.get(&peer_device_id).map(|services| services.window_video.sender.clone()).ok_or("peer window-video lane is unavailable")?;
+    let (stream_id, sequence) = {
+        let mut streams = pairing.0.window_control_streams.lock().map_err(|_| "window-control state is unavailable")?;
+        let (stream_id, sequence) = streams.entry(peer_device_id.clone()).or_insert_with(|| (NEXT_WINDOW_CONTROL_STREAM_ID.fetch_add(1, Ordering::Relaxed), 0));
+        *sequence = sequence.checked_add(1).ok_or("window-control sequence exhausted")?;
+        (*stream_id, *sequence)
+    };
+    let payload = serde_json::to_vec(&WindowControlAction::Input { source_stream_id, event }).map_err(|error| error.to_string())?;
+    if payload.len() > 512 { return Err("window-control event exceeds the metadata limit".into()); }
+    let frame = MediaFrame { session_id, target: DeviceId(peer_device_id), stream_id, sequence, timestamp_100ns: now_unix_ms().saturating_mul(10_000), width: 1, height: 1, codec: VideoCodec::WindowControl, key_frame: true, payload };
+    send_media_frame(&channel, MediaLane::Window, &frame).await.map_err(|error| error.to_string())
+}
+
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 fn validate_window_preview_frame(
@@ -1066,6 +1116,21 @@ async fn activate_session(
                                 }
                             }
                             let _ = window_app.emit("window-share-ended", &window_peer);
+                            continue;
+                        }
+                        Ok(WindowControlAction::Input { source_stream_id, event }) => {
+                            let target = window_pairing.window_share_targets.lock().ok().and_then(|targets| targets.get(&window_peer).copied());
+                            if let Some((_, hwnd)) = target.filter(|(active_stream, _)| *active_stream == source_stream_id) {
+                                let result = match event {
+                                    WindowPortalInput::PointerMove { x, y } => unified_workspace_agent::windows_input::inject_into_window(hwnd, InputKind::PointerMove, 0, x, y, 0, 0, 0),
+                                    WindowPortalInput::PointerButton { x, y, button, down } => unified_workspace_agent::windows_input::inject_into_window(hwnd, InputKind::PointerButton, u32::from(button), x, y, i32::from(down), 0, 0),
+                                    WindowPortalInput::PointerWheel { x, y, delta, horizontal } => unified_workspace_agent::windows_input::inject_into_window(hwnd, InputKind::PointerWheel, 0, x, y, delta, if horizontal { 1 << 1 } else { 0 }, 0),
+                                    WindowPortalInput::Key { virtual_key, scan_code, extended, down } => unified_workspace_agent::windows_input::inject_into_window(hwnd, InputKind::Key, u32::from(virtual_key), 0, 0, i32::from(down), if extended { 1 << 2 } else { 0 }, u32::from(scan_code)),
+                                };
+                                if let Err(error) = result { let _ = window_app.emit("window-stream-error", format!("remote window input rejected: {error}")); }
+                            } else {
+                                let _ = window_app.emit("window-stream-error", "remote input rejected: no matching consented capture target");
+                            }
                             continue;
                         }
                         Err(error) => {
@@ -1744,6 +1809,7 @@ fn main() {
             start_window_share,
             stop_window_share,
             revoke_remote_window_preview,
+            send_window_portal_input,
             disconnect_peer,
             list_remote_workspace,
             create_remote_directory,
@@ -1887,5 +1953,19 @@ mod tests {
             serde_json::json!({"action": "close_source_application"})
         )
         .is_err());
+    }
+
+    #[test]
+    fn window_portal_pointer_and_keyboard_controls_have_bounded_typed_shapes() {
+        let pointer = WindowControlAction::Input {
+            source_stream_id: 42,
+            event: WindowPortalInput::PointerButton { x: 0, y: 65535, button: 1, down: true },
+        };
+        let value = serde_json::to_value(pointer).unwrap();
+        assert_eq!(value["action"], "input");
+        assert_eq!(value["source_stream_id"], 42);
+        assert_eq!(value["event"]["kind"], "pointer_button");
+        assert_eq!(value["event"]["y"], 65535);
+        assert!(serde_json::from_value::<WindowControlAction>(serde_json::json!({"action":"input","source_stream_id":42,"event":{"kind":"launch_process"}})).is_err());
     }
 }

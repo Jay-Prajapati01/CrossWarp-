@@ -46,6 +46,7 @@ This page is the map for the project documentation. Read the product specificati
 - [Phase 0: local WGC window-capture smoke](phase0-evidence/wgc-capture-smoke.md)
 - [Phase 0: changed-frame burst capture proof](phase0-evidence/wgc-burst-capture.md)
 - [Phase 0: capture-to-window-lane preview](phase0-evidence/window-capture-preview.md)
+- [Phase 0: interactive window proxy control](phase0-evidence/window-portal-control.md)
 - [Phase 1: authenticated stream](phase1-evidence/authenticated-stream.md)
 - [Phase 1: authenticated shared session identity](phase1-evidence/session-identity.md)
 - [Phase 1: shared-session identity package build](phase1-evidence/session-identity-package-build.md)

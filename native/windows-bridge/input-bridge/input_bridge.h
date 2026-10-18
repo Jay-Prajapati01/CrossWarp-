@@ -68,6 +68,12 @@ UW_INPUT_API void UW_INPUT_CALL uw_input_capture_stop(uw_input_capture* capture)
    restrictions are not bypassed; GetLastError may not identify UIPI as the cause. */
 UW_INPUT_API int32_t UW_INPUT_CALL uw_input_inject(const uw_input_event* event);
 
+/* Injects a consented portal event into a visible, same-session target window.
+   Pointer x/y are normalized 0..65535 within that window. UIPI still applies. */
+UW_INPUT_API int32_t UW_INPUT_CALL uw_window_input_inject(
+    uint64_t target_window, uint32_t kind, uint32_t code, int32_t x, int32_t y,
+    int32_t value, uint32_t flags, uint32_t scan_code);
+
 #ifdef __cplusplus
 }
 #endif

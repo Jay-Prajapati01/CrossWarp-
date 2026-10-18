@@ -252,3 +252,58 @@ extern "C" int32_t UW_INPUT_CALL uw_input_inject(const uw_input_event* event) {
     if (inserted == 1) return 1;
     return 0;
 }
+
+extern "C" int32_t UW_INPUT_CALL uw_window_input_inject(
+    uint64_t target_window, uint32_t kind, uint32_t code, int32_t x, int32_t y,
+    int32_t value, uint32_t flags, uint32_t scan_code) {
+    const auto window = reinterpret_cast<HWND>(static_cast<uintptr_t>(target_window));
+    if (!window || !IsWindow(window) || !IsWindowVisible(window) || IsIconic(window)) return -1;
+    if (kind != UW_INPUT_POINTER_MOVE && kind != UW_INPUT_POINTER_BUTTON &&
+        kind != UW_INPUT_POINTER_WHEEL && kind != UW_INPUT_KEY) return -1;
+    if (kind == UW_INPUT_POINTER_BUTTON && (code < 1 || code > 5)) return -1;
+    if (kind == UW_INPUT_KEY && code > 0xFF) return -1;
+    if ((kind == UW_INPUT_POINTER_BUTTON || kind == UW_INPUT_KEY) && value != 0 && value != 1) return -1;
+    if ((kind == UW_INPUT_POINTER_MOVE || kind == UW_INPUT_POINTER_BUTTON || kind == UW_INPUT_POINTER_WHEEL) &&
+        (x < 0 || x > 65535 || y < 0 || y > 65535)) return -1;
+
+    RECT rect{};
+    if (!GetClientRect(window, &rect) || rect.right <= rect.left || rect.bottom <= rect.top) return -1;
+    POINT origin{rect.left, rect.top};
+    if (!ClientToScreen(window, &origin)) return -1;
+    if (kind != UW_INPUT_KEY) {
+        const int px = origin.x + MulDiv(x, rect.right - rect.left, 65535);
+        const int py = origin.y + MulDiv(y, rect.bottom - rect.top, 65535);
+        if (!SetCursorPos(px, py)) return 0;
+    }
+    SetForegroundWindow(window);
+    const HWND foreground = GetForegroundWindow();
+    if (foreground != window && GetAncestor(foreground, GA_ROOT) != window) return 0;
+    uw_input_event event{};
+    event.kind = kind;
+    event.code = code;
+    event.value = value;
+    event.flags = flags;
+    event.scan_code = scan_code;
+    INPUT input{};
+    if (kind == UW_INPUT_POINTER_MOVE) {
+        input.type = INPUT_MOUSE;
+        input.mi.dwFlags = MOUSEEVENTF_MOVE;
+    } else if (kind == UW_INPUT_POINTER_BUTTON) {
+        if (code == 1) input.mi.dwFlags = value ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
+        else if (code == 2) input.mi.dwFlags = value ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP;
+        else if (code == 3) input.mi.dwFlags = value ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_MIDDLEUP;
+        else { input.mi.dwFlags = value ? MOUSEEVENTF_XDOWN : MOUSEEVENTF_XUP; input.mi.mouseData = code == 4 ? XBUTTON1 : XBUTTON2; }
+        input.type = INPUT_MOUSE;
+    } else if (kind == UW_INPUT_POINTER_WHEEL) {
+        input.type = INPUT_MOUSE;
+        input.mi.mouseData = static_cast<DWORD>(value);
+        input.mi.dwFlags = (flags & UW_INPUT_FLAG_HORIZONTAL) ? MOUSEEVENTF_HWHEEL : MOUSEEVENTF_WHEEL;
+    } else {
+        input.type = INPUT_KEYBOARD;
+        input.ki.wVk = static_cast<WORD>(code);
+        input.ki.wScan = static_cast<WORD>(scan_code);
+        if (!value) input.ki.dwFlags |= KEYEVENTF_KEYUP;
+        if (flags & UW_INPUT_FLAG_EXTENDED_KEY) input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+    }
+    return SendInput(1, &input, sizeof(INPUT)) == 1 ? 1 : 0;
+}

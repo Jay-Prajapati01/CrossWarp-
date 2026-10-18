@@ -12,6 +12,8 @@ int wmain() {
     const uw_input_event invalid_kind{99, 0, 0, 0, 0, 0, 0, 0};
     assert(uw_input_inject(&invalid_kind) == -1);
     assert(uw_input_inject(nullptr) == -1);
+    assert(uw_window_input_inject(0, UW_INPUT_POINTER_MOVE, 0, 0, 0, 0, 0, 0) == -1);
+    assert(uw_window_input_inject(1, 99, 0, 0, 0, 0, 0, 0) == -1);
     std::wcout << L"input bridge argument contract passed; no system input was injected\n";
     return 0;
 }

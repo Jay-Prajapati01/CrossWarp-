@@ -1,6 +1,6 @@
 # CrossWarp session protocol
 
-**Wire protocol:** version 5.
+**Wire protocol:** version 6.
 **Compatibility:** both peers must use a compatible protocol version. Unknown/older versions are rejected. No released compatibility guarantee exists yet.
 
 This guide describes the current implementation in `crates/agent/src`. For code-level types, see `protocol.rs`, `transport.rs`, `session_transport.rs`, `file_rpc.rs`, `input_session.rs`, and `media_session.rs`.
@@ -19,7 +19,7 @@ After the authenticated handshake succeeds, both endpoints derive the same `Sess
 
 ## Version 5 input-event and media schema
 
-Version 5 retains the version-3 pairing/reconnect discriminator and version-4 event-time pointer coordinates for wheel ownership. It adds JPEG video and WindowControl stop/revoke frames for the consented window preview stream. Version 4 peers are rejected during handshake; both devices must run protocol v5 builds to interoperate.
+Version 6 retains the version-3 pairing/reconnect discriminator and version-4 event-time pointer coordinates for wheel ownership. It adds JPEG video and typed WindowControl stop/revoke/input frames for the consented interactive window proxy. A receiver can send normalized pointer, button, wheel, and key events tied to a source stream. The source only injects if that stream still maps to the active selected HWND. Version 5 peers are rejected during handshake; both devices must run protocol v6 builds to interoperate. This has source-level and local build/test evidence only; no physical cross-PC interaction is proven.
 
 ## Protocol v3 pairing and reconnect handshake
 
@@ -86,7 +86,7 @@ This is a protocol/routing contract only. The desktop does not yet send or consu
 
 `MediaFrame` carries session ID, target device ID, stream ID, sequence, monotonic source timestamp in 100 ns units, dimensions, codec (`H264`, `HEVC`, `AV1`, `JPEG`, `WindowControl`, or `BGRA8`), key-frame flag, and binary payload. A small bounded JSON header is length-prefixed within the service payload; media bytes remain binary. Dimensions and payload are bounded, and receivers reject wrong destinations, replay/reordering, and invalid sizes. Sequence gaps are allowed after stale frame drops. A changed stream ID starts a new consentable stream and resets that stream-local sequence/timestamp check; the authenticated encrypted record sequence still prevents transport replay.
 
-The desktop can enumerate visible titled windows, capture a selected HWND through the Windows.Graphics.Capture native bridge after source-side confirmation, downscale and encode bounded JPEG frames, and send them on the authenticated window-video lane. The receiver checks session/destination/replay state and frame dimensions, requests separate local consent, and renders the preview through the WebView image decoder. Stopping capture releases the source worker; the preview expires if frames stop. This remains view-only: there is no movable window-proxy surface, input forwarding, display-driver producer/consumer, or interactive ownership integration. H264/HEVC/AV1/BGRA decoding is not wired.
+The desktop can enumerate visible titled windows, capture a selected HWND through the Windows.Graphics.Capture native bridge after source-side confirmation, downscale and encode bounded JPEG frames, and send them on the authenticated window-video lane. The receiver checks session/destination/replay state and frame dimensions, requests separate local consent, and renders the image in a focusable proxy surface. Pointer, wheel, and key events in that surface travel back as WindowControl frames; the source validates the active source stream and uses a visible-HWND-scoped native adapter with ordinary `SendInput` and no UIPI bypass. This is a first implementation slice: two-PC end-to-end behavior, focus fidelity, stuck-input recovery, file-load QoS, display coexistence, Windows 10 behavior, and a tested movable/resizable portal layout are not yet proven. H264/HEVC/AV1/BGRA decoding and display-driver producer/consumer remain unwired.
 
 ## Evolution rules
 

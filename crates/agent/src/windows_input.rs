@@ -77,6 +77,16 @@ unsafe extern "system" {
     ) -> i32;
     fn uw_input_capture_stop(capture: *mut c_void);
     fn uw_input_inject(event: *const NativeEvent) -> i32;
+    fn uw_window_input_inject(
+        target_window: u64,
+        kind: u32,
+        code: u32,
+        x: i32,
+        y: i32,
+        value: i32,
+        flags: u32,
+        scan_code: u32,
+    ) -> i32;
 }
 
 /// Active native device capture. Dropping this value unregisters both devices.
@@ -141,6 +151,48 @@ pub fn inject(event: InputEvent) -> Result<(), InputBridgeError> {
     let native = to_native(event)?;
     // SAFETY: `native` is a valid repr(C) event for the duration of the call.
     match unsafe { uw_input_inject(&native) } {
+        1 => Ok(()),
+        0 => Err(InputBridgeError::InjectionRejected),
+        _ => Err(InputBridgeError::InvalidEvent),
+    }
+}
+
+/// Inject a user-approved portal event into a visible same-session window.
+/// Coordinates are normalized within the captured window; Windows UIPI remains in force.
+#[allow(clippy::too_many_arguments)] // Mirrors the fixed-width C ABI of the native bridge.
+pub fn inject_into_window(
+    target_window: u64,
+    kind: InputKind,
+    code: u32,
+    x: u16,
+    y: u16,
+    value: i32,
+    flags: u32,
+    scan_code: u32,
+) -> Result<(), InputBridgeError> {
+    if target_window == 0
+        || (matches!(kind, InputKind::PointerButton | InputKind::Key) && !matches!(value, 0 | 1))
+    {
+        return Err(InputBridgeError::InvalidEvent);
+    }
+    let kind = match kind {
+        InputKind::PointerMove => 1,
+        InputKind::PointerButton => 2,
+        InputKind::PointerWheel => 3,
+        InputKind::Key => 4,
+    };
+    match unsafe {
+        uw_window_input_inject(
+            target_window,
+            kind,
+            code,
+            i32::from(x),
+            i32::from(y),
+            value,
+            flags,
+            scan_code,
+        )
+    } {
         1 => Ok(()),
         0 => Err(InputBridgeError::InjectionRejected),
         _ => Err(InputBridgeError::InvalidEvent),
